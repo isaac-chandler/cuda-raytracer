@@ -1,0 +1,15 @@
+material ball diffuse 0.7 0.7 0.7 metallicity 0.05
+material glass ior 1.5 roughness 0.1
+material ground diffuse 0.7 0.6 0.2
+material sun diffuse 0 0 0 specular 0 0 0 emit 40 40 40
+
+sphere ball 3 2 4 3
+sphere glass -3 2 4 3
+sphere ground 0 -10001 2 10000
+sphere sun 200000 200000 300000 40000
+
+sky 0.2 0.4 0.9
+
+camera position 0 2 -2 forward 0 -0.5 1 up 0 1 0 fov 90
+
+image 1920 1080 10

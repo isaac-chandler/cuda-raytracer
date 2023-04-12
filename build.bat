@@ -1,0 +1,1 @@
+nvcc --use_fast_math -O3 -g -G -dopt=on -dlto -src-in-ptx -Xcompiler -openmp -Xcompiler -fp:fast -o raytracing.exe -arch=sm_61 --extra-device-vectorization --restrict raytracing.cu
