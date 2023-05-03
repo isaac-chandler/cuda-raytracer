@@ -387,19 +387,21 @@ struct Scene
         inv_height = 1.0f / (height - 1);
     }
 
-    COMMON void generate_initial_rays(RayData *ray_data, unsigned int *ray_indices, unsigned int *ray_keys, int rays_per_pixel, int x, int y, int seed) const
+    COMMON void generate_initial_rays(RayData *ray_data, unsigned int *ray_indices, unsigned int *ray_keys, int rays_per_pixel, int ray_index, int seed) const
     {
         xor_random rng;
-        xor_srand(&rng, y * 298592570346 + x * 588293039 + 709579 * seed);
+        xor_srand(&rng, ray_index * 298592570346 + 709579 * seed);
 
-        int framebuffer_index = y * width + x;
-        
-        for (int i = 0; i < rays_per_pixel; i++)
+        int framebuffer_index = ray_index / rays_per_pixel;
+
+        int x = framebuffer_index % width;
+        int y = framebuffer_index / width;
+
+        if (y < height)
         {
-            int ray_index = framebuffer_index * rays_per_pixel + i;
 #if __CUDA_ARCH__
-            ray_indices[ray_index] = ray_index;
-            ray_keys[ray_index] = 0;
+                ray_indices[ray_index] = ray_index;
+                ray_keys[ray_index] = 0;
 #endif
             float x_clamped = (x + random01(&rng)) * inv_width;
             float y_clamped = (y + random01(&rng)) * inv_height;
@@ -604,13 +606,9 @@ __constant__ Scene cuda_scene;
 
 __global__ void cuda_generate_initial_rays(RayData *ray_data, unsigned int *ray_indices, unsigned int *ray_keys, int rays_per_pixel, int seed)
 {
-    int x = blockIdx.x * blockDim.x + threadIdx.x;
-    int y = blockIdx.y;
+    int index = blockIdx.x * blockDim.x + threadIdx.x;
 
-    if (x < cuda_scene.width && y < cuda_scene.height)
-    {
-        cuda_scene.generate_initial_rays(ray_data, ray_indices, ray_keys, rays_per_pixel, x, y, seed);
-    }
+    cuda_scene.generate_initial_rays(ray_data, ray_indices, ray_keys, rays_per_pixel, index, seed);
 }
 
 __global__ void cuda_process_rays(RayData *ray_data, unsigned int *ray_indices, unsigned int *keys, int ray_count, int seed)
@@ -956,13 +954,10 @@ int main(int argc, char **argv)
         remaining_rays -= rays_to_cast;
 
         int total_rays = rays_to_cast * scene.width * scene.height;
-        #pragma omp parallel for schedule(guided)
-        for (int y = 0; y < scene.height; y++)
+        #pragma omp parallel for schedule(guided, 1000)
+        for (int i = 0; i < total_rays; i++)
         {
-            for (int x = 0; x < scene.width; x++)
-            {
-                scene.generate_initial_rays(&ray_data.front(), nullptr, nullptr, rays_to_cast, x, y, remaining_rays);
-            }
+            scene.generate_initial_rays(&ray_data.front(), nullptr, nullptr, rays_to_cast, i, remaining_rays);
         }
 
         for (int i = 0; i < bounces; i++)
@@ -1046,7 +1041,7 @@ int main(int argc, char **argv)
         remaining_rays -= rays_to_cast;
 
         int total_rays = rays_to_cast * scene.width * scene.height;
-        cuda_generate_initial_rays<<<dim3((scene.width + 31) / 32, scene.height), 32>>>(cuda_ray_data, cuda_ray_indices[0], cuda_ray_keys[0], rays_to_cast, remaining_rays);
+        cuda_generate_initial_rays<<<(total_rays + 31) / 32, 32>>>(cuda_ray_data, cuda_ray_indices[0], cuda_ray_keys[0], rays_to_cast, remaining_rays);
 
         
         for (int i = 0; i < bounces; i++)
