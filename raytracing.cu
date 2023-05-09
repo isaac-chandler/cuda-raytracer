@@ -67,13 +67,13 @@ struct Vec3
     }
 };
 
-struct Sphere
+struct __align__(16) Sphere
 {
     Vec3 center;
     float radius;
 };
 
-struct Triangle
+struct __align__(16) Triangle
 {
     Vec3 p1;
     Vec3 p2p1;
@@ -253,21 +253,26 @@ Vec3 max(const Vec3 &a, const Vec3 &b)
 
 struct xor_random
 {
-    unsigned int state;
+    unsigned long long state;
+    unsigned long long inc;
 };
 
 COMMON unsigned int xor_rand(xor_random* rng)
 {
-    rng->state ^= rng->state << 13;
-    rng->state ^= rng->state >> 17;
-    rng->state ^= rng->state << 5;
+    auto old_state = rng->state;
 
-    return rng->state;
+    rng->state = old_state * 6364136223846793005ULL + (rng->inc | 1);
+
+    auto xor_shifted = (unsigned int) (((old_state >> 18) ^ old_state) >> 27);
+    auto rot = (unsigned int) (old_state >> 59);
+
+    return (xor_shifted >> rot) | (xor_shifted << ((-rot) & 31));
 }
 
 COMMON void xor_srand(xor_random* rng, unsigned int seed)
 {
-    rng->state = seed;
+    rng->state = seed * 6839056345687307ULL;
+    rng->inc = 820957824423429ULL;
     xor_rand(rng);
 }
 
@@ -316,7 +321,7 @@ COMMON Vec3 random_on_sphere(xor_random *rng)
     };
 }
 
-struct RayData
+struct __align__(16) RayData
 {
     Ray ray;
     Vec3 transmitted_color;
@@ -399,7 +404,7 @@ struct Scene
 
         if (y < height)
         {
-#if __CUDA_ARCH__
+#ifdef __CUDA_ARCH__
                 ray_indices[ray_index] = ray_index;
                 ray_keys[ray_index] = 0;
 #endif
@@ -418,7 +423,7 @@ struct Scene
 
     COMMON void process_ray(RayData *ray_data_ptr, unsigned int *ray_key, xor_random rng) const
     {
-#if __CUDA_ARCH__
+#ifdef __CUDA_ARCH__
         if (*ray_key == 0xFFFF'FFFF)
             return;
 #else
@@ -495,7 +500,7 @@ struct Scene
             if (v < 0 || u + v > 1)
                 continue;
 
-            float hit_distance = dot(triangle.p3p1, q) / perpendicular_component;
+            float hit_distance = dot(triangle.p3p1, q) * inv_perpendicular_component;
 
             if (hit_distance < 0.005 || hit_distance >= closest_hit_distance)
                 continue;
@@ -592,7 +597,7 @@ struct Scene
         }
 
 
-#if __CUDA_ARCH__
+#ifdef __CUDA_ARCH__
         if (ray_data.transmitted_color.x == 0 && ray_data.transmitted_color.y == 0 && ray_data.transmitted_color.z == 0)
             *ray_key = 0xFFFF'FFFF;
         else
@@ -618,7 +623,7 @@ __global__ void cuda_process_rays(RayData *ray_data, unsigned int *ray_indices, 
     if (ray_index < ray_count)
     {
         xor_random rng;
-        xor_srand(&rng, ray_index * 49056781 + 36450824 * seed);
+        xor_srand(&rng, ray_index * 4137874753 + 279220567 * seed);
 
         cuda_scene.process_ray(ray_data + ray_indices[ray_index], keys + ray_index, rng);
     }
@@ -657,10 +662,25 @@ void accumulate_rays_to_framebuffer(Vec3 *framebuffer, RayData *ray_data, int to
 
 int main(int argc, char **argv)
 {
-    if (argc != 2)
+    if (argc < 2)
     {
         std::cout << "Usage: " << argv[0] << " <scene>\n";
         exit(1);
+    }
+
+    bool sort = true;
+    bool cpu = false;
+
+    for (int i = 2; i < argc; i++)
+    {
+        if (strcmp(argv[i], "no_sort") == 0)
+        {
+            sort = false;
+        }
+        else if (strcmp(argv[i], "cpu") == 0)
+        {
+            cpu = true;
+        }
     }
 
     Scene scene = {};
@@ -946,57 +966,69 @@ int main(int argc, char **argv)
     decltype(start_time) end_time;
     int remaining_rays = ray_count;
 
-#ifdef CPU
-
-    while (remaining_rays)
+    if (cpu)
     {
-        int rays_to_cast = min(remaining_rays, MAX_RAYS_PER_PIXEL_PER_PASS);
-        remaining_rays -= rays_to_cast;
-
-        int total_rays = rays_to_cast * scene.width * scene.height;
-        #pragma omp parallel for schedule(guided, 1000)
-        for (int i = 0; i < total_rays; i++)
+        while (remaining_rays)
         {
-            scene.generate_initial_rays(&ray_data.front(), nullptr, nullptr, rays_to_cast, i, remaining_rays);
-        }
+            int rays_to_cast = min(remaining_rays, MAX_RAYS_PER_PIXEL_PER_PASS);
+            remaining_rays -= rays_to_cast;
 
-        for (int i = 0; i < bounces; i++)
-        {
-            #pragma omp parallel for schedule(guided, 1000)
+            int total_rays = rays_to_cast * scene.width * scene.height;
+            #pragma omp parallel for schedule(dynamic, 1000)
             for (int i = 0; i < total_rays; i++)
             {
-                xor_random rng;
-                xor_srand(&rng, 36450821 * i + 345903 * remaining_rays);
-                unsigned int ray_key;
-                scene.process_ray(&ray_data[i], &ray_key, rng);
+                scene.generate_initial_rays(&ray_data.front(), nullptr, nullptr, rays_to_cast, i, remaining_rays);
             }
+
+            for (int i = 0; i < bounces; i++)
+            {
+                #pragma omp parallel for schedule(dynamic, 1000)
+                for (int i = 0; i < total_rays; i++)
+                {
+                    xor_random rng;
+                    xor_srand(&rng, 1905678123 * i + 345903 * (remaining_rays * MAX_RAYS_PER_PIXEL_PER_PASS + i));
+                    unsigned int ray_key;
+                    scene.process_ray(&ray_data[i], &ray_key, rng);
+                }
+            }
+
+            accumulate_rays_to_framebuffer(&framebuffer.front(), &ray_data.front(), total_rays, rays_to_cast);
         }
 
-        accumulate_rays_to_framebuffer(&framebuffer.front(), &ray_data.front(), total_rays, rays_to_cast);
+        end_time = std::chrono::high_resolution_clock::now();
+
     }
 
-    end_time = std::chrono::high_resolution_clock::now();
-    std::cout << "CPU Took " << std::chrono::duration<float>(end_time - start_time).count() << "s\n";
-#endif
+    auto cpu_time = std::chrono::duration<float>(end_time - start_time).count();
 
-
+    if (cpu)
+    {
+        std::cout << "CPU Took " << cpu_time << "s\n";
+    }
+    
     std::vector<unsigned char> output_image;
     output_image.reserve(scene.width * scene.height * 3 * 2);
 
-#if CPU
-    for (const auto &pixel : framebuffer)
+    if (cpu)
     {
-        float r = pixel.x / ray_count;
-        float g = pixel.y / ray_count;
-        float b = pixel.z / ray_count;
+        for (const auto &pixel : framebuffer)
+        {
+            float r = pixel.x / ray_count;
+            float g = pixel.y / ray_count;
+            float b = pixel.z / ray_count;
 
-        output_image.push_back((unsigned char) (sqrtf(r / (r + 1)) * 255.999f));
-        output_image.push_back((unsigned char) (sqrtf(g / (g + 1)) * 255.999f));
-        output_image.push_back((unsigned char) (sqrtf(b / (b + 1)) * 255.999f));
-    }
-#endif 
+            output_image.push_back((unsigned char) (sqrtf(r / (r + 1)) * 255.999f));
+            output_image.push_back((unsigned char) (sqrtf(g / (g + 1)) * 255.999f));
+            output_image.push_back((unsigned char) (sqrtf(b / (b + 1)) * 255.999f));
+        }
+    } 
 
     std::fill(framebuffer.begin(), framebuffer.end(), Vec3{0, 0, 0});
+
+    cudaFuncAttributes attribs;
+    cudaFuncGetAttributes(&attribs, cuda_generate_initial_rays);
+    cudaFuncGetAttributes(&attribs, cuda_process_rays);
+    cudaFuncGetAttributes(&attribs, cuda_accumulate_rays);
 
     start_time = std::chrono::high_resolution_clock::now();
 
@@ -1012,7 +1044,7 @@ int main(int argc, char **argv)
 
     Vec3 *cuda_framebuffer;
 
-    CUDA_CHECK(cudaMalloc(&cuda_framebuffer,       framebuffer.size()   * sizeof(Vec3)));
+
     CUDA_CHECK(cudaMalloc(&cuda_ray_data,          ray_data.size()      * sizeof(RayData)));
     CUDA_CHECK(cudaMalloc(&cuda_ray_keys[0],       ray_data.size()      * sizeof(unsigned int)));
     CUDA_CHECK(cudaMalloc(&cuda_ray_keys[1],       ray_data.size()      * sizeof(unsigned int)));
@@ -1021,19 +1053,33 @@ int main(int argc, char **argv)
     CUDA_CHECK(cudaMalloc(&scene_copy.spheres,     scene.sphere_count   * sizeof(Sphere)));
     CUDA_CHECK(cudaMalloc(&scene_copy.triangles,   scene.triangle_count * sizeof(Triangle)));
     CUDA_CHECK(cudaMalloc(&scene_copy.materials,   material_count       * sizeof(Material)));
+    CUDA_CHECK(cudaMalloc(&cuda_framebuffer,       framebuffer.size()   * sizeof(Vec3)));
 
-    cudaMemset(cuda_framebuffer, 0, framebuffer.size() * sizeof(Vec3));
+    cudaStream_t scene_copy_stream;
+    cudaEvent_t scene_copy_done;
+    cudaStream_t framebuffer_stream;
+    cudaEvent_t framebuffer_done;
+
+    CUDA_CHECK(cudaStreamCreate(&scene_copy_stream));
+    CUDA_CHECK(cudaEventCreateWithFlags(&scene_copy_done, cudaEventDisableTiming));
+    CUDA_CHECK(cudaStreamCreate(&framebuffer_stream));
+    CUDA_CHECK(cudaEventCreateWithFlags(&framebuffer_done, cudaEventDisableTiming));
 
     CUDA_CHECK(cub::DeviceRadixSort::SortPairs(nullptr, cuda_sort_temp_storage_size, cuda_ray_keys[0], cuda_ray_keys[1], cuda_ray_indices[0], cuda_ray_indices[1], ray_data.size()));
     CUDA_CHECK(cudaMalloc(&cuda_sort_temp_storage, cuda_sort_temp_storage_size));
 
-    CUDA_CHECK(cudaMemcpy(scene_copy.spheres,     scene.spheres,   sizeof(Sphere)   * scene.sphere_count,   cudaMemcpyHostToDevice));    
-    CUDA_CHECK(cudaMemcpy(scene_copy.triangles,   scene.triangles, sizeof(Triangle) * scene.triangle_count, cudaMemcpyHostToDevice));    
-    CUDA_CHECK(cudaMemcpy(scene_copy.materials,   scene.materials, sizeof(Material) * material_count,       cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpyAsync(scene_copy.spheres,     scene.spheres,   sizeof(Sphere)   * scene.sphere_count,   cudaMemcpyHostToDevice, scene_copy_stream));    
+    CUDA_CHECK(cudaMemcpyAsync(scene_copy.triangles,   scene.triangles, sizeof(Triangle) * scene.triangle_count, cudaMemcpyHostToDevice, scene_copy_stream));    
+    CUDA_CHECK(cudaMemcpyAsync(scene_copy.materials,   scene.materials, sizeof(Material) * material_count,       cudaMemcpyHostToDevice, scene_copy_stream));
 
-    CUDA_CHECK(cudaMemcpyToSymbol(cuda_scene, &scene_copy, sizeof(Scene)));
+    CUDA_CHECK(cudaMemcpyToSymbolAsync(cuda_scene, &scene_copy, sizeof(Scene), 0, cudaMemcpyHostToDevice, scene_copy_stream));
+    cudaEventRecord(scene_copy_done, scene_copy_stream);
+
+    cudaMemsetAsync(cuda_framebuffer, 0, framebuffer.size() * sizeof(Vec3), framebuffer_stream);
+    cudaEventRecord(framebuffer_done, framebuffer_stream);
 
     remaining_rays = ray_count;
+
 
     while (remaining_rays)
     {
@@ -1041,14 +1087,15 @@ int main(int argc, char **argv)
         remaining_rays -= rays_to_cast;
 
         int total_rays = rays_to_cast * scene.width * scene.height;
-        cuda_generate_initial_rays<<<(total_rays + 31) / 32, 32>>>(cuda_ray_data, cuda_ray_indices[0], cuda_ray_keys[0], rays_to_cast, remaining_rays);
+        cuda_generate_initial_rays<<<(total_rays + 127) / 128, 128 >>>(cuda_ray_data, cuda_ray_indices[0], cuda_ray_keys[0], rays_to_cast, remaining_rays);
 
         
         for (int i = 0; i < bounces; i++)
         {
-            cuda_process_rays<<<(total_rays + 127) / 128, 128>>>(cuda_ray_data, cuda_ray_indices[0], cuda_ray_keys[0], total_rays, remaining_rays);
+            cudaStreamWaitEvent(0, scene_copy_done);
+            cuda_process_rays<<<(total_rays + 127) / 128, 128>>>(cuda_ray_data, cuda_ray_indices[0], cuda_ray_keys[0], total_rays, remaining_rays * MAX_RAYS_PER_PIXEL_PER_PASS + i);
 
-            if (i + 1 != bounces)
+            if (sort && i + 1 != bounces)
             {
                 CUDA_CHECK(cub::DeviceRadixSort::SortPairs(cuda_sort_temp_storage, cuda_sort_temp_storage_size, 
                     cuda_ray_keys[0], cuda_ray_keys[1], 
@@ -1061,6 +1108,7 @@ int main(int argc, char **argv)
 
         }
 
+        cudaStreamWaitEvent(0, framebuffer_done);
         cuda_accumulate_rays<<<(total_rays + 127) / 128, 128>>>(cuda_framebuffer, cuda_ray_data, rays_to_cast);
     }
 
@@ -1068,8 +1116,13 @@ int main(int argc, char **argv)
     CUDA_CHECK(cudaMemcpy(&framebuffer.front(), cuda_framebuffer, framebuffer.size() * sizeof(Vec3), cudaMemcpyDeviceToHost));
     
     end_time = std::chrono::high_resolution_clock::now();
-    std::cout << "GPU Took " << std::chrono::duration<float>(end_time - start_time).count() << "s\n";
+    auto gpu_time = std::chrono::duration<float>(end_time - start_time).count();
+    std::cout << "GPU Took " << gpu_time << "s\n";
 
+    if (cpu)
+    {
+        std::cout << "Speedup " << (cpu_time / gpu_time) << "\n";
+    }
 
     for (const auto &pixel : framebuffer)
     {
