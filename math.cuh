@@ -113,9 +113,14 @@ COMMON inline Vec3 normalise(const Vec3 &vector)
     return (1.0f / magnitude(vector)) * vector;
 }
 
-inline float clamp01(float x)
+COMMON inline float clamp(float x, float min_val, float max_val)
 {
-    return x > 1 ? 1 : (x < 0 ? 0 : x);
+    return max(min(x, max_val), min_val);
+}
+
+COMMON inline float clamp01(float x)
+{
+    return clamp(x, 0, 1);
 }
 
 COMMON inline Vec3 min(const Vec3 &a, const Vec3 &b)

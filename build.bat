@@ -1,1 +1,1 @@
-nvcc --use_fast_math -O3 -g -G -lineinfo -dopt=on -dlto -src-in-ptx -Xcompiler -openmp -o raytracing.exe --extra-device-vectorization --restrict raytracing.cu scene.cu
+nvcc --use_fast_math -O3 -g -G -lineinfo -dopt=on -dlto -src-in-ptx -Xcompiler /fp:fast -Xcompiler -openmp -o raytracing.exe -arch sm_61 --restrict raytracing.cu scene.cu

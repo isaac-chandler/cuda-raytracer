@@ -5,8 +5,8 @@ ply white teapot/models/Mesh000.ply
 ply white teapot/models/Mesh001.ply
 quad grey -1000 0 -1000 -1000 0 1000 1000 0 1000 1000 0 -1000
 
-sky 0.6 0.9 1.5
+sky_map teapot/textures/envmap.pfm
 
-camera position -26 10 0 forward 1 -0.2 0 up 0 1 0 fov 40
+camera position -26 10 0 forward 1 -0.2 0 up 0 1 0 fov 60
 
-image 1000 1000 100 30
+image 1000 1000 5000 10 0.7

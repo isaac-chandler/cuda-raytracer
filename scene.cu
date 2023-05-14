@@ -9,85 +9,31 @@
 
 #define MAX_BVH_DEPTH 30
 
-COMMON Sphere load_sphere(Sphere *sphere)
+template<typename T> COMMON T load_read_only(T *t)
 {
+    static_assert(alignof(T) >= sizeof(float4), "load_read_only requires 16 byte alignment");
+
 #ifdef __CUDA_ARCH__
-    Sphere result;
+    constexpr int count = sizeof(T) / sizeof(float4);
 
-    float4 first = __ldg((float4 *) sphere);
+    union Dummy{
+        float4 dummy[count];
+        T value;
 
-    result.center.x = first.x;
-    result.center.y = first.y;
-    result.center.z = first.z;
-    result.radius = first.w;
-
-    return result;
-#else
-    return *sphere;
-#endif
-}
-
-COMMON Triangle load_triangle(Triangle *triangle)
-{
-#ifdef __CUDA_ARCH__
-    Triangle result;
-
-    float4 first = __ldg((float4 *) triangle);
-
-    result.p1.x = first.x;
-    result.p1.y = first.y;
-    result.p1.z = first.z;
-    result.p2p1.x = first.w;
-
-    float4 second = __ldg(((float4 *) triangle) + 1);
+        COMMON Dummy() {}
+    };
     
-    result.p2p1.y = second.x;
-    result.p2p1.z = second.y;
-    result.p3p1.x = second.z;
-    result.p3p1.y = second.w;
+    Dummy dummy;
 
-    float4 third = __ldg(((float4 *) triangle) + 2);
+    #pragma unroll
+    for (int i = 0; i < count; i++)
+    {
+        dummy.dummy[i] = __ldg(((float4 *) t) + i);
+    }
 
-    result.p3p1.z = third.x;
-    result.normal.x = third.y;
-    result.normal.y = third.z;
-    result.normal.z = third.w;
-
-    return result;
+    return dummy.value;
 #else
-    return *triangle;
-#endif
-}
-
-COMMON Material load_material(Material *material)
-{
-#ifdef __CUDA_ARCH__
-    Material result;
-
-    float4 first = __ldg((float4 *) material);
-
-    result.diffuse_albedo.x = first.x;
-    result.diffuse_albedo.y = first.y;
-    result.diffuse_albedo.z = first.z;
-    result.metallicity = first.w;
-
-    float4 second = __ldg(((float4 *) material) + 1);
-    
-    result.specular_albedo.x = second.x;
-    result.specular_albedo.y = second.y;
-    result.specular_albedo.z = second.z;
-    result.roughness = second.w;
-
-    float4 third = __ldg(((float4 *) material) + 2);
-
-    result.emitted.x = third.x;
-    result.emitted.y = third.y;
-    result.emitted.z = third.z;
-    result.index_of_refraction = third.w;
-
-    return result;
-#else
-    return *material;
+    return *t;
 #endif
 }
 
@@ -200,14 +146,14 @@ COMMON void Scene::bvh_closest_hit_distance(const Ray &ray, float &closest_hit_d
             continue;
         }
 
-        BvhNode node = bvh[node_index_stack[stack_count]];
+        BvhNode node = load_read_only(&bvh[node_index_stack[stack_count]]);
 
         
         if (node.child1 > node.child2)
         {
             for (int i = node.child2; i < node.child1; i++)
             {
-                const auto triangle = load_triangle(&triangles[i]);
+                const auto triangle = load_read_only(&triangles[i]);
 
                 Vec3 h = cross(ray.direction, triangle.p3p1);
                 float perpendicular_component = dot(h, triangle.p2p1);
@@ -244,8 +190,8 @@ COMMON void Scene::bvh_closest_hit_distance(const Ray &ray, float &closest_hit_d
 
         float hit1_distance, hit2_distance;
 
-        bool hit1 = ray_aabb_intersection(bvh[node.child1].aabb, ray, n_inv, hit1_distance, closest_hit_distance);
-        bool hit2 = ray_aabb_intersection(bvh[node.child2].aabb, ray, n_inv, hit2_distance, closest_hit_distance);
+        bool hit1 = ray_aabb_intersection(load_read_only(&bvh[node.child1]).aabb, ray, n_inv, hit1_distance, closest_hit_distance);
+        bool hit2 = ray_aabb_intersection(load_read_only(&bvh[node.child2]).aabb, ray, n_inv, hit2_distance, closest_hit_distance);
 
         if (hit1 && hit2)
         {
@@ -289,6 +235,43 @@ COMMON void Scene::bvh_closest_hit_distance(const Ray &ray, float &closest_hit_d
     }
 }
 
+// Maybe it makes sense to pre-convert to a cubemap instead of doing this every time a ray misses
+COMMON Vec3 equal_area_project_sphere_to_square(const Vec3 &direction)
+{
+    float x = abs(direction.x);
+    float y = abs(direction.y);
+    float z = abs(direction.z);
+
+    float r = sqrt(1 - min(z, 1.0f));
+
+    float a = max(x, y);
+    float b = min(x, y);
+
+    b = a == 0 ? 0 : b / a;
+
+    float phi = (2 / M_PI) * atan(b);
+
+    if (x < y)
+    {
+        phi = 1 - phi;
+    }
+
+    float v = phi * r;
+    float u = r - v;
+
+    if (direction.z < 0)
+    {
+        float old_v = v;
+        v = 1 - u;
+        u = 1 - old_v;
+    }
+
+    u = copysign(u, direction.x);
+    v = copysign(v, direction.y);
+
+    return {(u + 1) * 0.5f, (v + 1) * 0.5f, 0};
+}
+
 COMMON void Scene::process_ray(RayData *ray_data_ptr, unsigned int *ray_key, xor_random rng) const
 {
 #ifdef __CUDA_ARCH__
@@ -301,14 +284,22 @@ COMMON void Scene::process_ray(RayData *ray_data_ptr, unsigned int *ray_key, xor
 
     RayData ray_data = *ray_data_ptr;
 
-    float closest_hit_distance = INFINITY;
-    int closest_hit_index = -1;
+    float closest_hit_distance = 1e30;
+
+#if __CUDA_ARCH__
+    __shared__ int closest_hit_indices[128];
+    int &closest_hit_index = closest_hit_indices[threadIdx.x];
+#else
+    int closest_hit_index;
+#endif
+
+    closest_hit_index = -1;
 
     const auto ray = ray_data.ray;
 
     for (int i = 0; i < sphere_count; i++)
     {
-        const auto sphere = load_sphere(&spheres[i]);
+        const auto sphere = spheres[i];
 
         Vec3 offset = sphere.center - ray.origin;
         
@@ -346,6 +337,20 @@ COMMON void Scene::process_ray(RayData *ray_data_ptr, unsigned int *ray_key, xor
 
     if (closest_hit_index == -1)
     {
+        // Environment map in our test data is rotated, apply a hardcoded transformation for now.
+        float dir_x = ray.direction.x * -0.386527 + ray.direction.z * 0.922278;
+        float dir_y = ray.direction.x * -0.922278 + ray.direction.z * -0.386527;
+        float dir_z = ray.direction.y;
+
+        Vec3 coords = equal_area_project_sphere_to_square({dir_x, dir_y, dir_z});
+        float x = coords.x;
+        float y = coords.y;
+
+        // Nearest filtering
+        int texel_x = (int) (clamp01(x) * (environment_map_width  - 1) + 0.5);
+        int texel_y = (int) (clamp01(y) * (environment_map_height - 1) + 0.5);
+        Vec3 sky_color = environment_map[texel_y * environment_map_height + texel_x];
+
         ray_data.collected_color += sky_color * ray_data.transmitted_color;
         ray_data.transmitted_color = {0, 0, 0};
     }
@@ -357,16 +362,17 @@ COMMON void Scene::process_ray(RayData *ray_data_ptr, unsigned int *ray_key, xor
         Vec3 normal;
         if (closest_hit_index < sphere_count)
         {
-            const auto hit_sphere = load_sphere(&spheres[closest_hit_index]);
+            const auto hit_sphere = spheres[closest_hit_index];
             normal = (1 / hit_sphere.radius) * (hit_point - hit_sphere.center);
         }
         else
         {
-            const auto hit_triangle = load_triangle(&triangles[closest_hit_index - sphere_count]);
+            const auto hit_triangle = triangles[closest_hit_index - sphere_count];
             normal = hit_triangle.normal;
         }
 
-        const auto material = load_material(&materials[closest_hit_index]);
+        const auto material = load_read_only(&materials[material_indices[closest_hit_index]]);
+
         ray_data.collected_color += material.emitted * ray_data.transmitted_color;
         
 
@@ -500,6 +506,27 @@ void load_ply(std::vector<Triangle> &triangles, const std::string &filename)
     }
 }
 
+Vec3 *load_pfm(const std::string &filename, int *width, int *height)
+{
+    std::ifstream file(filename, std::ios_base::binary);
+
+    std::string line;
+    std::getline(file, line);
+    std::getline(file, line);
+
+    std::stringstream ss(line);
+    
+    ss >> *width;
+    ss >> *height;
+
+    std::getline(file, line);
+
+    Vec3 *image = new Vec3[*width * *height];
+    file.read((char *) image, sizeof(Vec3) * *width * *height);
+
+    return image;
+}
+
 void load_scene(Scene *scene, const char *filename, bool use_bvh)
 {
     scene->width = 1920;
@@ -512,9 +539,12 @@ void load_scene(Scene *scene, const char *filename, bool use_bvh)
 
     std::ifstream scene_file(filename);
 
-    std::unordered_map<std::string, Material> materials_map;
-    std::vector<Material> sphere_materials;
-    std::vector<Material> triangle_materials;
+    std::unordered_map<std::string, uint16_t> materials_map;
+    std::vector<Material> materials;
+    std::vector<uint16_t> sphere_materials;
+    std::vector<uint16_t> triangle_materials;
+
+    
 
     for (std::string line; std::getline(scene_file, line);)
     {
@@ -529,9 +559,25 @@ void load_scene(Scene *scene, const char *filename, bool use_bvh)
 
         if (token == "sky")
         {
-            tokens >> scene->sky_color.x;
-            tokens >> scene->sky_color.y;
-            tokens >> scene->sky_color.z;
+            std::getline(tokens, token, ' ' );
+
+            float r, g, b;
+
+            tokens >> r;
+            tokens >> g;
+            tokens >> b;
+
+            scene->environment_map = new Vec3{r, g, b};
+            scene->environment_map_width = 1;
+            scene->environment_map_height = 1;
+        }
+        if (token == "sky_map")
+        {
+            std::getline(tokens, token, ' ' );
+
+            scene->environment_map = load_pfm(token, &scene->environment_map_width, &scene->environment_map_height);
+            std::cout << "Loaded environment map with size " << scene->environment_map_width << "," << scene->environment_map_height << "\n";
+
         }
         else if (token == "camera")
         {
@@ -567,7 +613,9 @@ void load_scene(Scene *scene, const char *filename, bool use_bvh)
         {
             std::getline(tokens, token, ' ' );
 
-            Material &material = materials_map[token];
+            materials_map[token] = (uint16_t) materials.size();
+
+            Material material;
             material.specular_albedo = {1, 1, 1};
             material.diffuse_albedo = {1, 1, 1};
             material.emitted = {0, 0, 0};
@@ -608,6 +656,8 @@ void load_scene(Scene *scene, const char *filename, bool use_bvh)
                     tokens >> material.index_of_refraction;
                 }
             }
+
+            materials.push_back(material);
         }
         else if (token == "sphere")
         {
@@ -711,6 +761,7 @@ void load_scene(Scene *scene, const char *filename, bool use_bvh)
             tokens >> scene->height;
             tokens >> scene->ray_count;
             tokens >> scene->bounces;
+            tokens >> scene->exposure;
         }
     }
 
@@ -722,9 +773,13 @@ void load_scene(Scene *scene, const char *filename, bool use_bvh)
     scene->triangles = new Triangle[triangles.size()];
     std::copy(triangles.begin(), triangles.end(), scene->triangles);
 
-    scene->materials = new Material[sphere_materials.size() + triangle_materials.size()];
-    std::copy(sphere_materials.begin(), sphere_materials.end(), scene->materials);
-    std::copy(triangle_materials.begin(), triangle_materials.end(), scene->materials + sphere_materials.size());
+    scene->material_indices = new uint16_t[sphere_materials.size() + triangle_materials.size()];
+    std::copy(sphere_materials.begin(), sphere_materials.end(), scene->material_indices);
+    std::copy(triangle_materials.begin(), triangle_materials.end(), scene->material_indices + sphere_materials.size());
+
+    scene->materials = new Material[materials.size()];
+    std::copy(materials.begin(), materials.end(), scene->materials);
+    scene->material_count = (uint16_t) materials.size();
 
     scene->precompute_cammera_data();
     scene->generate_bvh(use_bvh ? MAX_BVH_DEPTH : 0);
@@ -759,11 +814,11 @@ void Aabb::expand(const Aabb &other)
     max_bound = max(max_bound, other.max_bound);
 }
 
-float Aabb::area() const
+float Aabb::half_area() const
 {
     Vec3 size = max_bound - min_bound;
 
-    return 2 * (size.x * size.y + size.x * size.z + size.y * size.z);
+    return size.x * size.y + size.x * size.z + size.y * size.z;
 }
 
 void BvhNode::maybe_split(const Scene *scene, std::vector<BvhNode> &bvh_nodes, int max_depth)
@@ -773,12 +828,14 @@ void BvhNode::maybe_split(const Scene *scene, std::vector<BvhNode> &bvh_nodes, i
         aabb.expand(scene->triangles[i]);
     }
 
-    if (child2 + 1 == child1 || max_depth == 0)
+    int our_count = child1 - child2;
+
+    if (our_count <= 4 || max_depth == 0)
     {
         return;
     }
 
-    float our_cost = aabb.area() * (child1 - child2);
+    float our_cost = aabb.half_area() * our_count;
 
     struct Bin
     {
@@ -794,8 +851,8 @@ void BvhNode::maybe_split(const Scene *scene, std::vector<BvhNode> &bvh_nodes, i
 
     for (int axis = 0; axis < 3; axis++)
     {
-        float min_centroid = INFINITY;
-        float max_centroid = -INFINITY;
+        float min_centroid = 1e30;
+        float max_centroid = -1e30;
 
         for (int i = child2; i < child1; i++)
         {
@@ -822,8 +879,8 @@ void BvhNode::maybe_split(const Scene *scene, std::vector<BvhNode> &bvh_nodes, i
         }
 
         float left_area[BINS - 1], right_area[BINS - 1];
-        int left_count[BINS - 1], right_count[BINS - 1];
-        int left_sum = 0, right_sum = 0;
+        int left_count[BINS - 1];
+        int left_sum = 0;
 
         Aabb left_box, right_box;
 
@@ -832,19 +889,17 @@ void BvhNode::maybe_split(const Scene *scene, std::vector<BvhNode> &bvh_nodes, i
             left_sum += bins[i].triangle_count;
             left_count[i] = left_sum;
             left_box.expand(bins[i].aabb);
-            left_area[i] = left_box.area();
+            left_area[i] = left_box.half_area();
 
-            right_sum += bins[BINS - 1 - i].triangle_count;
-            right_count[BINS - 2 - i] = right_sum;
             right_box.expand(bins[BINS - 1 - i].aabb);
-            right_area[BINS - 2 - i] = right_box.area();
+            right_area[BINS - 2 - i] = right_box.half_area();
         }
 
         scale = (max_centroid - min_centroid) / BINS;
 
         for (int i = 0; i + 1 < BINS; i++)
         {
-            float plane_cost = left_count[i] * left_area[i] + right_count[i] * right_area[i];
+            float plane_cost = left_count[i] * left_area[i] + (our_count - left_count[i]) * right_area[i];
 
             if (plane_cost != 0 && plane_cost < best_cost)
             {
@@ -872,7 +927,7 @@ void BvhNode::maybe_split(const Scene *scene, std::vector<BvhNode> &bvh_nodes, i
         else
         {
             std::swap(scene->triangles[i], scene->triangles[j]);
-            std::swap(scene->materials[scene->sphere_count + i], scene->materials[scene->sphere_count + j]);
+            std::swap(scene->material_indices[scene->sphere_count + i], scene->material_indices[scene->sphere_count + j]);
             j--;
         }
     }

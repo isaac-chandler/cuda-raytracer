@@ -154,9 +154,9 @@ int main(int argc, char **argv)
     {
         for (const auto &pixel : framebuffer)
         {
-            float r = pixel.x / scene.ray_count;
-            float g = pixel.y / scene.ray_count;
-            float b = pixel.z / scene.ray_count;
+            float r = scene.exposure * pixel.x / scene.ray_count;
+            float g = scene.exposure * pixel.y / scene.ray_count;
+            float b = scene.exposure * pixel.z / scene.ray_count;
 
             output_image.push_back((unsigned char) (sqrtf(r / (r + 1)) * 255.999f));
             output_image.push_back((unsigned char) (sqrtf(g / (g + 1)) * 255.999f));
@@ -175,8 +175,6 @@ int main(int argc, char **argv)
 
     Scene scene_copy = scene;
 
-    const auto material_count = scene.sphere_count + scene.triangle_count;
-
     RayData *cuda_ray_data;
     unsigned int *cuda_ray_keys[2];
     unsigned int *cuda_ray_indices[2];
@@ -185,17 +183,22 @@ int main(int argc, char **argv)
 
     Vec3 *cuda_framebuffer;
 
+    int primitive_count = scene.sphere_count + scene.material_count;
 
-    CUDA_CHECK(cudaMalloc(&cuda_ray_data,          ray_data.size()      * sizeof(RayData)));
-    CUDA_CHECK(cudaMalloc(&cuda_ray_keys[0],       ray_data.size()      * sizeof(unsigned int)));
-    CUDA_CHECK(cudaMalloc(&cuda_ray_keys[1],       ray_data.size()      * sizeof(unsigned int)));
-    CUDA_CHECK(cudaMalloc(&cuda_ray_indices[0],    ray_data.size()      * sizeof(unsigned int)));
-    CUDA_CHECK(cudaMalloc(&cuda_ray_indices[1],    ray_data.size()      * sizeof(unsigned int)));
-    CUDA_CHECK(cudaMalloc(&scene_copy.spheres,     scene.sphere_count   * sizeof(Sphere)));
-    CUDA_CHECK(cudaMalloc(&scene_copy.triangles,   scene.triangle_count * sizeof(Triangle)));
-    CUDA_CHECK(cudaMalloc(&scene_copy.materials,   material_count       * sizeof(Material)));
-    CUDA_CHECK(cudaMalloc(&scene_copy.bvh,         scene.bvh_node_count * sizeof(BvhNode)));
-    CUDA_CHECK(cudaMalloc(&cuda_framebuffer,       framebuffer.size()   * sizeof(Vec3)));
+    int environment_map_size = scene.environment_map_width * scene.environment_map_height;
+
+    CUDA_CHECK(cudaMalloc(&cuda_ray_data,               ray_data.size()      * sizeof(RayData)));
+    CUDA_CHECK(cudaMalloc(&cuda_ray_keys[0],            ray_data.size()      * sizeof(unsigned int)));
+    CUDA_CHECK(cudaMalloc(&cuda_ray_keys[1],            ray_data.size()      * sizeof(unsigned int)));
+    CUDA_CHECK(cudaMalloc(&cuda_ray_indices[0],         ray_data.size()      * sizeof(unsigned int)));
+    CUDA_CHECK(cudaMalloc(&cuda_ray_indices[1],         ray_data.size()      * sizeof(unsigned int)));
+    CUDA_CHECK(cudaMalloc(&scene_copy.spheres,          scene.sphere_count   * sizeof(Sphere)));
+    CUDA_CHECK(cudaMalloc(&scene_copy.triangles,        scene.triangle_count * sizeof(Triangle)));
+    CUDA_CHECK(cudaMalloc(&scene_copy.materials,        scene.material_count * sizeof(Material)));
+    CUDA_CHECK(cudaMalloc(&scene_copy.material_indices, primitive_count      * sizeof(uint16_t)));
+    CUDA_CHECK(cudaMalloc(&scene_copy.bvh,              scene.bvh_node_count * sizeof(BvhNode)));
+    CUDA_CHECK(cudaMalloc(&scene_copy.environment_map,  environment_map_size * sizeof(Vec3)));
+    CUDA_CHECK(cudaMalloc(&cuda_framebuffer,            framebuffer.size()   * sizeof(Vec3)));
 
     cudaStream_t scene_copy_stream;
     cudaEvent_t scene_copy_done;
@@ -210,10 +213,12 @@ int main(int argc, char **argv)
     CUDA_CHECK(cub::DeviceRadixSort::SortPairs(nullptr, cuda_sort_temp_storage_size, cuda_ray_keys[0], cuda_ray_keys[1], cuda_ray_indices[0], cuda_ray_indices[1], ray_data.size()));
     CUDA_CHECK(cudaMalloc(&cuda_sort_temp_storage, cuda_sort_temp_storage_size));
 
-    CUDA_CHECK(cudaMemcpyAsync(scene_copy.spheres,     scene.spheres,   sizeof(Sphere)   * scene.sphere_count,   cudaMemcpyHostToDevice, scene_copy_stream));    
-    CUDA_CHECK(cudaMemcpyAsync(scene_copy.triangles,   scene.triangles, sizeof(Triangle) * scene.triangle_count, cudaMemcpyHostToDevice, scene_copy_stream));    
-    CUDA_CHECK(cudaMemcpyAsync(scene_copy.materials,   scene.materials, sizeof(Material) * material_count,       cudaMemcpyHostToDevice, scene_copy_stream));
-    CUDA_CHECK(cudaMemcpyAsync(scene_copy.bvh,         scene.bvh,       sizeof(BvhNode)  * scene.bvh_node_count, cudaMemcpyHostToDevice, scene_copy_stream));
+    CUDA_CHECK(cudaMemcpyAsync(scene_copy.spheres,            scene.spheres,          sizeof(Sphere)   * scene.sphere_count,   cudaMemcpyHostToDevice, scene_copy_stream));    
+    CUDA_CHECK(cudaMemcpyAsync(scene_copy.triangles,          scene.triangles,        sizeof(Triangle) * scene.triangle_count, cudaMemcpyHostToDevice, scene_copy_stream));
+    CUDA_CHECK(cudaMemcpyAsync(scene_copy.materials,          scene.materials,        sizeof(Material) * scene.material_count, cudaMemcpyHostToDevice, scene_copy_stream));
+    CUDA_CHECK(cudaMemcpyAsync(scene_copy.material_indices,   scene.material_indices, sizeof(uint16_t) * primitive_count,      cudaMemcpyHostToDevice, scene_copy_stream));
+    CUDA_CHECK(cudaMemcpyAsync(scene_copy.bvh,                scene.bvh,              sizeof(BvhNode)  * scene.bvh_node_count, cudaMemcpyHostToDevice, scene_copy_stream));
+    CUDA_CHECK(cudaMemcpyAsync(scene_copy.environment_map,    scene.environment_map,  sizeof(Vec3)     * environment_map_size, cudaMemcpyHostToDevice, scene_copy_stream));
 
     CUDA_CHECK(cudaMemcpyToSymbolAsync(cuda_scene, &scene_copy, sizeof(Scene), 0, cudaMemcpyHostToDevice, scene_copy_stream));
     cudaEventRecord(scene_copy_done, scene_copy_stream);
@@ -269,9 +274,9 @@ int main(int argc, char **argv)
 
     for (const auto &pixel : framebuffer)
     {
-        float r = pixel.x / scene.ray_count;
-        float g = pixel.y / scene.ray_count;
-        float b = pixel.z / scene.ray_count;
+        float r = scene.exposure * pixel.x / scene.ray_count;
+        float g = scene.exposure * pixel.y / scene.ray_count;
+        float b = scene.exposure * pixel.z / scene.ray_count;
 
         output_image.push_back((unsigned char) (sqrtf(r / (r + 1)) * 255.999f));
         output_image.push_back((unsigned char) (sqrtf(g / (g + 1)) * 255.999f));

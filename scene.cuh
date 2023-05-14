@@ -26,7 +26,7 @@ struct Ray
     Vec3 direction;
 };
 
-struct Material 
+struct __align__(16) Material 
 {
     Vec3 diffuse_albedo;
     float metallicity;
@@ -44,13 +44,13 @@ struct __align__(16) RayData
 };
 
 struct Aabb {
-    Vec3 min_bound = {INFINITY, INFINITY, INFINITY};
-    Vec3 max_bound = {-INFINITY, -INFINITY, -INFINITY};
+    Vec3 min_bound = { 1e30,  1e30,  1e30};
+    Vec3 max_bound = {-1e30, -1e30, -1e30};
 
     void expand(const Vec3 &other);
     void expand(const Triangle &other);
     void expand(const Aabb &other);
-    float area() const;
+    float half_area() const;
 };
 
 struct __align__(32) BvhNode {
@@ -69,7 +69,9 @@ struct Scene
     Triangle *triangles;
     int triangle_count;
 
+    uint16_t *material_indices;
     Material *materials;
+    uint16_t material_count;
 
     BvhNode *bvh;
     int bvh_node_count;
@@ -77,11 +79,14 @@ struct Scene
     int width;
     int height;
 
-    Vec3 sky_color;
+    Vec3 *environment_map;
+    int environment_map_width, environment_map_height;
     Vec3 camera_position;
     Vec3 forward;
     Vec3 up;
     float vertical_fov;
+
+    float exposure;
 
     Vec3 min_coord;
     Vec3 inv_dimensions;
