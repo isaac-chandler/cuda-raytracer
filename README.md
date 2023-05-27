@@ -31,15 +31,16 @@ For Linux (untested):
   - `cornell_plus.scene` - Cornell box with some metallic and glass spheres
   - `spheres.scene` - Spheres of various materials with a sun light
   - `teapot.scene` - Utah teapot illuminated by an environment map (Adapted from scene by Benedikt Bitterli)
+  - `lamp.scene` - A lamp (Adapted from scene by Benedikt Bitterli)
 - Options are
   - `no_sort` Disable ray reordering
   - `cpu` Run CPU ray tracing
   - `no_gpu` Do not run GPU ray tracing 
-  - `no_bvh` Do not use a BVH (not recommended for `teapot.scene`)
+  - `no_bvh` Do not use a BVH (not recommended for `teapot.scene` or `lamp.scene`)
 
 # Acknowledgements
 - Ray tracing basics: https://raytracing.github.io/
-- Teapot scene: Bennedikt Bitterli, Rendering resources, 2016, https://benedikt-bitterli.me/resources/
+- Teapot and lamp scenes: Bennedikt Bitterli, Rendering resources, 2016, https://benedikt-bitterli.me/resources/
 - Ray triangle intersection: https://en.wikipedia.org/wiki/M%C3%B6ller%E2%80%93Trumbore_intersection_algorithm
 - BVH construction algorithm: https://jacco.ompf2.com/2022/04/21/how-to-build-a-bvh-part-3-quick-builds/
 - Ray AABB intersection: https://tavianator.com/2022/ray_box_boundary.html
