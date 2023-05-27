@@ -46,6 +46,7 @@ For Linux (untested):
 - PNG Image output `stb_image_write` library by Sean T. Barrett, https://github.com/nothings/stb
 - Environment map projection: From PBRTv4 ray tracer - https://github.com/mmp/pbrt-v4/blob/c4baa534042e2ec4eb245924efbcef477e096389/src/pbrt/util/math.cpp#L317
 - Cornell box scene measurements https://www.graphics.cornell.edu/online/box/data.html
+- Random number generation https://www.pcg-random.org/download.html
 
 # Scene file format
 Commands: 
