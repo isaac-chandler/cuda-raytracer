@@ -1,0 +1,65 @@
+material shiny_metal metallicity 1 roughness 0.05
+material cable diffuse 0.006 0.006 0.006 metallicity 0.05 roughness 0.4
+material bounce_card diffuse 0.6 0.6 0.6
+material emitter emit 500 500 500 diffuse 0 0 0 specular 0 0 0
+material glass ior 1.5
+material mirror metallicity 1
+material black_plastic metallicity 0.05 roughness 0.05 diffuse 0.03 0.03 0.03
+material backdrop
+
+
+ply bounce_card lamp/models/Mesh021.ply
+ply backdrop lamp/models/Mesh024.ply
+ply black_plastic lamp/models/Mesh034.ply
+ply shiny_metal lamp/models/Mesh008.ply
+ply black_plastic lamp/models/Mesh018.ply
+ply cable lamp/models/Mesh025.ply
+ply cable lamp/models/Mesh028.ply
+ply shiny_metal lamp/models/Mesh016.ply
+ply black_plastic lamp/models/Mesh042.ply
+ply shiny_metal lamp/models/Mesh017.ply
+ply shiny_metal lamp/models/Mesh045.ply
+ply mirror lamp/models/Mesh007.ply
+ply black_plastic lamp/models/Mesh013.ply
+ply shiny_metal lamp/models/Mesh011.ply
+ply black_plastic lamp/models/Mesh010.ply
+ply glass lamp/models/Mesh022.ply
+ply emitter lamp/models/Mesh006.ply
+ply mirror lamp/models/Mesh005.ply
+ply mirror lamp/models/Mesh014.ply
+ply mirror lamp/models/Mesh002.ply
+ply shiny_metal lamp/models/Mesh012.ply
+ply black_plastic lamp/models/Mesh032.ply
+ply shiny_metal lamp/models/Mesh027.ply
+ply black_plastic lamp/models/Mesh044.ply
+ply black_plastic lamp/models/Mesh015.ply
+ply shiny_metal lamp/models/Mesh033.ply
+ply shiny_metal lamp/models/Mesh031.ply
+ply shiny_metal lamp/models/Mesh035.ply
+ply black_plastic lamp/models/Mesh029.ply
+ply shiny_metal lamp/models/Mesh036.ply
+ply black_plastic lamp/models/Mesh023.ply
+ply black_plastic lamp/models/Mesh040.ply
+ply shiny_metal lamp/models/Mesh038.ply
+ply shiny_metal lamp/models/Mesh004.ply
+ply shiny_metal lamp/models/Mesh039.ply
+ply black_plastic lamp/models/Mesh019.ply
+ply cable lamp/models/Mesh041.ply
+ply cable lamp/models/Mesh030.ply
+ply shiny_metal lamp/models/Mesh043.ply
+ply black_plastic lamp/models/Mesh046.ply
+ply shiny_metal lamp/models/Mesh037.ply
+ply shiny_metal lamp/models/Mesh048.ply
+ply shiny_metal lamp/models/Mesh003.ply
+ply shiny_metal lamp/models/Mesh047.ply
+ply shiny_metal lamp/models/Mesh049.ply
+ply shiny_metal lamp/models/Mesh001.ply
+ply cable lamp/models/Mesh026.ply
+ply cable lamp/models/Mesh009.ply
+ply cable lamp/models/Mesh000.ply
+
+sky_map teapot/textures/envmap.pfm
+
+camera position 11 4 -11 forward -0.5 -0.12 0.5 up 0 1 0 fov 35
+
+image 1000 1000 5000 10 0.1

@@ -8,6 +8,8 @@ struct xor_random
     unsigned long long inc;
 };
 
+// Implementation of PCG random number generator
+// https://www.pcg-random.org/download.html
 COMMON inline unsigned int xor_rand(xor_random* rng)
 {
     auto old_state = rng->state;

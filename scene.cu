@@ -9,6 +9,8 @@
 
 #define MAX_BVH_DEPTH 30
 
+// By using this we promise CUDA that the value we are reading will never be written by a kernel
+// This allows the data to be loaded into L1 cache which is not coherent
 template<typename T> COMMON T load_read_only(T *t)
 {
     static_assert(alignof(T) >= sizeof(float4), "load_read_only requires 16 byte alignment");
@@ -37,11 +39,13 @@ template<typename T> COMMON T load_read_only(T *t)
 #endif
 }
 
+// Convert number of the form 0bABCDE to
+// 0b00A00B00C00D00E
 __device__ unsigned short interleave_5(unsigned short x)
 {
-    x = (x | (x << 8)) & 0x100F;
-    x = (x | (x << 4)) & 0x10C3;
-    x = (x | (x << 2)) & 0x1249;
+    x = (x | (x << 8)) & 0b1000000001111;
+    x = (x | (x << 4)) & 0x1000010100011;
+    x = (x | (x << 2)) & 0b1001001001001;
 
     return x;
 }
@@ -55,7 +59,7 @@ __device__ unsigned short morton_code(const Vec3 &vec)
     return interleave_5(x) | (interleave_5(y) << 1) | (interleave_5(z) << 2);
 }
 
-void Scene::precompute_cammera_data()
+void Scene::precompute_camera_data()
 {
     Vec3 right = cross(up, forward);
 
@@ -100,6 +104,8 @@ COMMON void Scene::generate_initial_rays(RayData *ray_data, unsigned int *ray_in
     }
 }
 
+// Branchless ray AABB intersection from https://tavianator.com/2022/ray_box_boundary.html
+// (assuming there is hardware min/max which is true on all modern GPUs and CPUs)
 COMMON bool ray_aabb_intersection(const Aabb &aabb, const Ray &ray, const Vec3 &n_inv, float &tmin, float tmax)
 {
     tmin = 0.0f;
@@ -155,6 +161,8 @@ COMMON void Scene::bvh_closest_hit_distance(const Ray &ray, float &closest_hit_d
             {
                 const auto triangle = load_read_only(&triangles[i]);
 
+                // Möller–Trumbore ray-triangle intersection algorithm
+                // Based on https://en.wikipedia.org/wiki/M%C3%B6ller%E2%80%93Trumbore_intersection_algorithm
                 Vec3 h = cross(ray.direction, triangle.p3p1);
                 float perpendicular_component = dot(h, triangle.p2p1);
 
@@ -228,14 +236,50 @@ COMMON void Scene::bvh_closest_hit_distance(const Ray &ray, float &closest_hit_d
             node_distance_stack[stack_count] = hit2_distance;
             stack_count++;
         }
-        else
-        {
-            int allow_breakpoint = 1;
-        }
     }
 }
 
+void Scene::copy_from_cpu_async(const Scene &scene, cudaStream_t stream)
+{
+    Scene scene_copy = scene;
+
+    int primitive_count = scene.triangle_count + scene.sphere_count;
+    int environment_map_size = scene.environment_map_width * scene.environment_map_height;
+
+    CUDA_CHECK(cudaMalloc(&scene_copy.spheres,          scene.sphere_count   * sizeof(Sphere)));
+    CUDA_CHECK(cudaMalloc(&scene_copy.triangles,        scene.triangle_count * sizeof(Triangle)));
+    CUDA_CHECK(cudaMalloc(&scene_copy.materials,        scene.material_count * sizeof(Material)));
+    CUDA_CHECK(cudaMalloc(&scene_copy.material_indices, primitive_count      * sizeof(uint16_t)));
+    CUDA_CHECK(cudaMalloc(&scene_copy.bvh,              scene.bvh_node_count * sizeof(BvhNode)));
+    CUDA_CHECK(cudaMalloc(&scene_copy.environment_map,  environment_map_size * sizeof(Vec3)));
+
+    CUDA_CHECK(cudaMemcpyAsync(scene_copy.spheres,          scene.spheres,          sizeof(Sphere)   * scene.sphere_count,   cudaMemcpyHostToDevice, stream));    
+    CUDA_CHECK(cudaMemcpyAsync(scene_copy.triangles,        scene.triangles,        sizeof(Triangle) * scene.triangle_count, cudaMemcpyHostToDevice, stream));
+    CUDA_CHECK(cudaMemcpyAsync(scene_copy.materials,        scene.materials,        sizeof(Material) * scene.material_count, cudaMemcpyHostToDevice, stream));
+    CUDA_CHECK(cudaMemcpyAsync(scene_copy.material_indices, scene.material_indices, sizeof(uint16_t) * primitive_count,      cudaMemcpyHostToDevice, stream));
+    CUDA_CHECK(cudaMemcpyAsync(scene_copy.bvh,              scene.bvh,              sizeof(BvhNode)  * scene.bvh_node_count, cudaMemcpyHostToDevice, stream));
+    CUDA_CHECK(cudaMemcpyAsync(scene_copy.environment_map,  scene.environment_map,  sizeof(Vec3)     * environment_map_size, cudaMemcpyHostToDevice, stream));
+
+    CUDA_CHECK(cudaMemcpyToSymbol(*this, &scene_copy, sizeof(Scene)));
+}
+
+void Scene::free_from_gpu()
+{
+    Scene scene_copy;
+    CUDA_CHECK(cudaMemcpyFromSymbol(&scene_copy, *this, sizeof(Scene)));
+    
+    CUDA_CHECK(cudaFree(scene_copy.environment_map));
+    CUDA_CHECK(cudaFree(scene_copy.material_indices));
+    CUDA_CHECK(cudaFree(scene_copy.materials));
+    CUDA_CHECK(cudaFree(scene_copy.bvh));
+    CUDA_CHECK(cudaFree(scene_copy.triangles));
+    CUDA_CHECK(cudaFree(scene_copy.spheres));
+}
+
+
 // Maybe it makes sense to pre-convert to a cubemap instead of doing this every time a ray misses
+// Our test environment map is in a format used by the PBRTv4 ray tracer
+// This code is based on https://github.com/mmp/pbrt-v4/blob/c4baa534042e2ec4eb245924efbcef477e096389/src/pbrt/util/math.cpp#L317
 COMMON Vec3 equal_area_project_sphere_to_square(const Vec3 &direction)
 {
     float x = abs(direction.x);
@@ -286,14 +330,7 @@ COMMON void Scene::process_ray(RayData *ray_data_ptr, unsigned int *ray_key, xor
 
     float closest_hit_distance = 1e30;
 
-#if __CUDA_ARCH__
-    __shared__ int closest_hit_indices[128];
-    int &closest_hit_index = closest_hit_indices[threadIdx.x];
-#else
-    int closest_hit_index;
-#endif
-
-    closest_hit_index = -1;
+    int closest_hit_index = -1;
 
     const auto ray = ray_data.ray;
 
@@ -337,7 +374,8 @@ COMMON void Scene::process_ray(RayData *ray_data_ptr, unsigned int *ray_key, xor
 
     if (closest_hit_index == -1)
     {
-        // Environment map in our test data is rotated, apply a hardcoded transformation for now.
+        // Environment map in our test data is rotated and has y and z axes flipped, 
+        // apply a hardcoded transformation for now.
         float dir_x = ray.direction.x * -0.386527 + ray.direction.z * 0.922278;
         float dir_y = ray.direction.x * -0.922278 + ray.direction.z * -0.386527;
         float dir_z = ray.direction.y;
@@ -543,8 +581,6 @@ void load_scene(Scene *scene, const char *filename, bool use_bvh)
     std::vector<Material> materials;
     std::vector<uint16_t> sphere_materials;
     std::vector<uint16_t> triangle_materials;
-
-    
 
     for (std::string line; std::getline(scene_file, line);)
     {
@@ -781,7 +817,7 @@ void load_scene(Scene *scene, const char *filename, bool use_bvh)
     std::copy(materials.begin(), materials.end(), scene->materials);
     scene->material_count = (uint16_t) materials.size();
 
-    scene->precompute_cammera_data();
+    scene->precompute_camera_data();
     scene->generate_bvh(use_bvh ? MAX_BVH_DEPTH : 0);
 
     scene->min_coord = scene->bvh[0].aabb.min_bound;
@@ -821,6 +857,13 @@ float Aabb::half_area() const
     return size.x * size.y + size.x * size.z + size.y * size.z;
 }
 
+COMMON bool BvhNode::is_leaf() const
+{
+    return child2 <= child1;
+}
+
+// Binned surface area heuristic BVH computation
+// Based on https://jacco.ompf2.com/2022/04/21/how-to-build-a-bvh-part-3-quick-builds/
 void BvhNode::maybe_split(const Scene *scene, std::vector<BvhNode> &bvh_nodes, int max_depth)
 {
     for (int i = child2; i < child1; i++)
