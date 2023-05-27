@@ -256,13 +256,13 @@ void Scene::copy_from_cpu_async(const Scene &scene, cudaStream_t stream)
     CUDA_CHECK(cudaMemcpyAsync(scene_copy.bvh,              scene.bvh,              sizeof(BvhNode)  * scene.bvh_node_count, cudaMemcpyHostToDevice, stream));
     CUDA_CHECK(cudaMemcpyAsync(scene_copy.environment_map,  scene.environment_map,  sizeof(Vec3)     * environment_map_size, cudaMemcpyHostToDevice, stream));
 
-    CUDA_CHECK(cudaMemcpyToSymbol(this, &scene_copy, sizeof(Scene)));
+    CUDA_CHECK(cudaMemcpyToSymbol(*this, &scene_copy, sizeof(Scene)));
 }
 
 void Scene::free_from_gpu()
 {
     Scene scene_copy;
-    CUDA_CHECK(cudaMemcpyFromSymbol(&scene_copy, this, sizeof(Scene)));
+    CUDA_CHECK(cudaMemcpyFromSymbol(&scene_copy, *this, sizeof(Scene)));
     
     CUDA_CHECK(cudaFree(scene_copy.environment_map));
     CUDA_CHECK(cudaFree(scene_copy.material_indices));
