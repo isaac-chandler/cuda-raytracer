@@ -41,6 +41,7 @@ struct __align__(16) RayData
     Ray ray;
     Vec3 transmitted_color;
     Vec3 collected_color;
+    Vec3 hit_point; // New member variable for storing the hit point
 };
 
 struct Aabb {

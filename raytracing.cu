@@ -18,11 +18,117 @@
 
 __constant__ Scene cuda_scene;
 
+
+bool IntersectRaySphere(const Ray& ray, const Sphere& sphere, float& t)
+{
+    Vec3 oc = ray.origin - sphere.center;
+    float a = dot(ray.direction, ray.direction);
+    float b = 2.0f * dot(oc, ray.direction);
+    float c = dot(oc, oc) - sphere.radius * sphere.radius;
+
+    float discriminant = b * b - 4.0f * a * c;
+
+    if (discriminant > 0.0f)
+    {
+        float t0 = (-b - sqrtf(discriminant)) / (2.0f * a);
+        float t1 = (-b + sqrtf(discriminant)) / (2.0f * a);
+
+        if (t0 > 0.0f)
+        {
+            t = t0;
+            return true;
+        }
+        else if (t1 > 0.0f)
+        {
+            t = t1;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+
+Vec3 ComputeHitPoint(const Ray& ray)
+{
+    // Initialize the hit point to an invalid value
+    Vec3 hit_point = {FLT_MAX, FLT_MAX, FLT_MAX};
+
+    // Iterate over all spheres in the scene
+    for (int i = 0; i < cuda_scene.sphere_count; i++)
+    {
+        const Sphere& sphere = cuda_scene.spheres[i];
+        // Perform ray-sphere intersection test
+        // Implement the intersection algorithm and update the hit point if an intersection occurs
+        float t;
+        if (IntersectRaySphere(ray, sphere, t))
+        {
+            // Update the hit point if the new intersection point is closer
+            if (t < hit_point.x)
+            {
+                hit_point = ray.origin + ray.direction * t;
+            }
+        }
+    }
+
+    return hit_point;
+}
+uint32_t InterleaveBits(uint32_t value)
+{
+    value = (value | (value << 16)) & 0x0000FFFF;
+    value = (value | (value << 8)) & 0x00FF00FF;
+    value = (value | (value << 4)) & 0x0F0F0F0F;
+    value = (value | (value << 2)) & 0x33333333;
+    value = (value | (value << 1)) & 0x55555555;
+
+    return value;
+}
+
+uint64_t CalculateZCurvePosition(const Vec3& hit_point)
+{
+    
+
+    // Normalize the hit point coordinates to the range [0, 1]
+    float x = (hit_point.x - cuda_scene.min_coord.x) * cuda_scene.inv_dimensions.x;
+    float y = (hit_point.y - cuda_scene.min_coord.y) * cuda_scene.inv_dimensions.y;
+    float z = (hit_point.z - cuda_scene.min_coord.z) * cuda_scene.inv_dimensions.z;
+
+    // Convert the normalized coordinates to integer values in the range [0, UINT_MAX]
+    uint32_t xi = static_cast<uint32_t>(x * UINT_MAX);
+    uint32_t yi = static_cast<uint32_t>(y * UINT_MAX);
+    uint32_t zi = static_cast<uint32_t>(z * UINT_MAX);
+
+    // Interleave the bits of the x, y, and z coordinates to create the Z-curve position
+    uint64_t position = InterleaveBits(xi) | (InterleaveBits(yi) << 1) | (InterleaveBits(zi) << 2);
+
+    return position;
+}
+
+
+bool CompareHitPoints(const RayData& ray1, const RayData& ray2)
+{
+    // Compute the Z-curve position for each ray's hit point
+
+    // Extract the hit points from the ray data
+    Vec3 hit_point1 = ray1.ray.origin + ray1.ray.direction * ray1.closest_hit_distance;
+    Vec3 hit_point2 = ray2.ray.origin + ray2.ray.direction * ray2.closest_hit_distance;
+
+    // Calculate the Z-curve position based on the hit points
+    uint64_t position1 = CalculateZCurvePosition(hit_point1);
+    uint64_t position2 = CalculateZCurvePosition(hit_point2);
+
+    // Compare the Z-curve positions
+    return position1 < position2;
+}
+
+
+
 __global__ void cuda_generate_initial_rays(RayData *ray_data, unsigned int *ray_indices, unsigned int *ray_keys, int rays_per_pixel, int seed)
 {
     int index = blockIdx.x * blockDim.x + threadIdx.x;
 
     cuda_scene.generate_initial_rays(ray_data, ray_indices, ray_keys, rays_per_pixel, index, seed);
+    ray_data[index].hit_point = ComputeHitPoint(ray_data[index].ray); //ComputeHitPoint with  intersection computation 
 }
 
 __global__ void cuda_process_rays(RayData *ray_data, unsigned int *ray_indices, unsigned int *keys, int ray_count, int seed)
