@@ -12,4 +12,4 @@ sky 0.2 0.4 0.9
 
 camera position 0 2 -2 forward 0 -0.5 1 up 0 1 0 fov 90
 
-image 1920 1080 5000 30 1
+image 1000 1000 1000 10 1

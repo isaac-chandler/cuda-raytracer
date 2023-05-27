@@ -1,8 +1,9 @@
-material white diffuse 0.9 0.9 0.9 metallicity 0.05 specular 1 1 1 roughness 0
+material glass ior 1.5
+material metal metallicity 1 roughness 0.1
 material grey diffuse 0.6 0.6 0.6
 
-ply white teapot/models/Mesh000.ply
-ply white teapot/models/Mesh001.ply
+ply metal teapot/models/Mesh000.ply
+ply glass teapot/models/Mesh001.ply
 quad grey -1000 0 -1000 -1000 0 1000 1000 0 1000 1000 0 -1000
 
 sky_map teapot/textures/envmap.pfm

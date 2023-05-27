@@ -155,7 +155,7 @@ COMMON void Scene::bvh_closest_hit_distance(const Ray &ray, float &closest_hit_d
         BvhNode node = load_read_only(&bvh[node_index_stack[stack_count]]);
 
         
-        if (node.child1 > node.child2)
+        if (node.is_leaf())
         {
             for (int i = node.child2; i < node.child1; i++)
             {
@@ -193,48 +193,49 @@ COMMON void Scene::bvh_closest_hit_distance(const Ray &ray, float &closest_hit_d
                 closest_hit_distance = hit_distance;
                 closest_hit_index = sphere_count + i;
             }
-            continue;
         }
-
-        float hit1_distance, hit2_distance;
-
-        bool hit1 = ray_aabb_intersection(load_read_only(&bvh[node.child1]).aabb, ray, n_inv, hit1_distance, closest_hit_distance);
-        bool hit2 = ray_aabb_intersection(load_read_only(&bvh[node.child2]).aabb, ray, n_inv, hit2_distance, closest_hit_distance);
-
-        if (hit1 && hit2)
+        else
         {
-            if (hit1_distance < hit2_distance)
+            float hit1_distance, hit2_distance;
+
+            bool hit1 = ray_aabb_intersection(load_read_only(&bvh[node.child1]).aabb, ray, n_inv, hit1_distance, closest_hit_distance);
+            bool hit2 = ray_aabb_intersection(load_read_only(&bvh[node.child2]).aabb, ray, n_inv, hit2_distance, closest_hit_distance);
+
+            if (hit1 && hit2)
+            {
+                if (hit1_distance < hit2_distance)
+                {
+                    node_index_stack[stack_count] = node.child1;
+                    node_distance_stack[stack_count] = hit1_distance;
+                    stack_count++;
+
+                    node_index_stack[stack_count] = node.child2;
+                    node_distance_stack[stack_count] = hit2_distance;
+                    stack_count++;
+                }
+                else
+                {
+                    node_index_stack[stack_count] = node.child2;
+                    node_distance_stack[stack_count] = hit2_distance;
+                    stack_count++;
+
+                    node_index_stack[stack_count] = node.child1;
+                    node_distance_stack[stack_count] = hit1_distance;
+                    stack_count++;
+                }
+            }
+            else if (hit1)
             {
                 node_index_stack[stack_count] = node.child1;
                 node_distance_stack[stack_count] = hit1_distance;
                 stack_count++;
-
-                node_index_stack[stack_count] = node.child2;
-                node_distance_stack[stack_count] = hit2_distance;
-                stack_count++;
             }
-            else
+            else if (hit2)
             {
                 node_index_stack[stack_count] = node.child2;
                 node_distance_stack[stack_count] = hit2_distance;
                 stack_count++;
-
-                node_index_stack[stack_count] = node.child1;
-                node_distance_stack[stack_count] = hit1_distance;
-                stack_count++;
             }
-        }
-        else if (hit1)
-        {
-            node_index_stack[stack_count] = node.child1;
-            node_distance_stack[stack_count] = hit1_distance;
-            stack_count++;
-        }
-        else if (hit2)
-        {
-            node_index_stack[stack_count] = node.child2;
-            node_distance_stack[stack_count] = hit2_distance;
-            stack_count++;
         }
     }
 }
@@ -595,8 +596,6 @@ void load_scene(Scene *scene, const char *filename, bool use_bvh)
 
         if (token == "sky")
         {
-            std::getline(tokens, token, ' ' );
-
             float r, g, b;
 
             tokens >> r;
@@ -607,7 +606,7 @@ void load_scene(Scene *scene, const char *filename, bool use_bvh)
             scene->environment_map_width = 1;
             scene->environment_map_height = 1;
         }
-        if (token == "sky_map")
+        else if (token == "sky_map")
         {
             std::getline(tokens, token, ' ' );
 
@@ -1007,7 +1006,7 @@ void Scene::generate_bvh(int max_depth)
 
     std::vector<BvhNode> bvh_nodes;
     // Not only for speed, needed so that references will never be invalidated
-    bvh_nodes.reserve(triangle_count * 2 - 1);
+    bvh_nodes.reserve(triangle_count * 2);
 
     bvh_nodes.emplace_back();
     auto &root = bvh_nodes.back();
