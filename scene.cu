@@ -278,6 +278,8 @@ void Scene::free_from_gpu()
 
 
 // Maybe it makes sense to pre-convert to a cubemap instead of doing this every time a ray misses
+// Our test environment map is in a format used by the PBRTv4 ray tracer
+// This code is based on https://github.com/mmp/pbrt-v4/blob/c4baa534042e2ec4eb245924efbcef477e096389/src/pbrt/util/math.cpp#L317
 COMMON Vec3 equal_area_project_sphere_to_square(const Vec3 &direction)
 {
     float x = abs(direction.x);
