@@ -19,7 +19,7 @@
 __constant__ Scene cuda_scene;
 
 
-bool IntersectRaySphere(const Ray& ray, const Sphere& sphere, float& t)
+__device__ bool IntersectRaySphere(const Ray& ray, const Sphere& sphere, float& t)
 {
     Vec3 oc = ray.origin - sphere.center;
     float a = dot(ray.direction, ray.direction);
@@ -49,7 +49,7 @@ bool IntersectRaySphere(const Ray& ray, const Sphere& sphere, float& t)
 }
 
 
-Vec3 ComputeHitPoint(const Ray& ray)
+__device__ Vec3 ComputeHitPoint(const Ray& ray)
 {
     // Initialize the hit point to an invalid value
     Vec3 hit_point = {FLT_MAX, FLT_MAX, FLT_MAX};
@@ -59,21 +59,21 @@ Vec3 ComputeHitPoint(const Ray& ray)
     {
         const Sphere& sphere = cuda_scene.spheres[i];
         // Perform ray-sphere intersection test
-        // Implement the intersection algorithm and update the hit point if an intersection occurs
+        // Implemented the intersection algorithm  above  it is a very simple algo
         float t;
         if (IntersectRaySphere(ray, sphere, t))
         {
             // Update the hit point if the new intersection point is closer
             if (t < hit_point.x)
             {
-                hit_point = ray.origin + ray.direction * t;
+                hit_point = ray.origin + (t* ray.direction );
             }
         }
     }
 
     return hit_point;
 }
-uint32_t InterleaveBits(uint32_t value)
+__device__ uint32_t InterleaveBits(uint32_t value)   // 16 bit 0 to 1
 {
     value = (value | (value << 16)) & 0x0000FFFF;
     value = (value | (value << 8)) & 0x00FF00FF;
@@ -84,7 +84,7 @@ uint32_t InterleaveBits(uint32_t value)
     return value;
 }
 
-uint64_t CalculateZCurvePosition(const Vec3& hit_point)
+__device__ uint64_t CalculateZCurvePosition(const Vec3& hit_point)
 {
     
 
@@ -105,13 +105,13 @@ uint64_t CalculateZCurvePosition(const Vec3& hit_point)
 }
 
 
-bool CompareHitPoints(const RayData& ray1, const RayData& ray2)
+__device__ bool CompareHitPoints(const RayData& ray1, const RayData& ray2)
 {
     // Compute the Z-curve position for each ray's hit point
 
     // Extract the hit points from the ray data
-    Vec3 hit_point1 = ray1.ray.origin + ray1.ray.direction * ray1.closest_hit_distance;
-    Vec3 hit_point2 = ray2.ray.origin + ray2.ray.direction * ray2.closest_hit_distance;
+    Vec3 hit_point1 = ray1.ray.origin + ray1.ray.direction * ray1.hit_point;  // may be ray1_pint is wrong 
+    Vec3 hit_point2 = ray2.ray.origin + ray2.ray.direction * ray2.hit_point;  // same issue may be there
 
     // Calculate the Z-curve position based on the hit points
     uint64_t position1 = CalculateZCurvePosition(hit_point1);
@@ -120,6 +120,29 @@ bool CompareHitPoints(const RayData& ray1, const RayData& ray2)
     // Compare the Z-curve positions
     return position1 < position2;
 }
+__device__ void ReorderRays(RayData* ray_data, unsigned int* ray_indices, unsigned int* keys, int ray_count)
+{
+    for (int i = 1; i < ray_count; ++i)
+    {
+        RayData current_ray_data = ray_data[i];
+        unsigned int current_key = keys[i];
+        unsigned int current_ray_index = ray_indices[i];
+
+        int j = i - 1;
+        while (j >= 0 && CompareHitPoints(ray_data[j], current_ray_data))
+        {
+            ray_data[j + 1] = ray_data[j];
+            keys[j + 1] = keys[j];
+            ray_indices[j + 1] = ray_indices[j];
+            --j;
+        }
+
+        ray_data[j + 1] = current_ray_data;
+        keys[j + 1] = current_key;
+        ray_indices[j + 1] = current_ray_index;
+    }
+}
+
 
 
 
@@ -134,7 +157,7 @@ __global__ void cuda_generate_initial_rays(RayData *ray_data, unsigned int *ray_
 __global__ void cuda_process_rays(RayData *ray_data, unsigned int *ray_indices, unsigned int *keys, int ray_count, int seed)
 {
     int ray_index = blockIdx.x * blockDim.x + threadIdx.x;
-
+    ReorderRays(ray_data, ray_indices, keys, ray_count); // `ReorderRays`
     if (ray_index < ray_count)
     {
         xor_random rng;
@@ -142,6 +165,7 @@ __global__ void cuda_process_rays(RayData *ray_data, unsigned int *ray_indices, 
 
         cuda_scene.process_ray(ray_data + ray_indices[ray_index], keys + ray_index, rng);
     }
+    //ReorderRays(ray_data, ray_indices, keys, ray_count); // `ReorderRays` 
 }
 
 __global__ void cuda_accumulate_rays(Vec3 *framebuffer, RayData *ray_data, int rays_per_pixel)
