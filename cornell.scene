@@ -30,4 +30,4 @@ sky 0 0 0
 
 camera position -278 273 -800 forward 0 0 1 up 0 1 0 fov 37
 
-image 1000 1000 100 30
+image 1000 1000 100 30 1
