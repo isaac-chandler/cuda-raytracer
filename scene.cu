@@ -235,6 +235,44 @@ COMMON void Scene::bvh_closest_hit_distance(const Ray &ray, float &closest_hit_d
     }
 }
 
+void Scene::copy_from_cpu_async(const Scene &scene, cudaStream_t stream)
+{
+    Scene scene_copy = scene;
+
+    int primitive_count = scene.triangle_count + scene.sphere_count;
+    int environment_map_size = scene.environment_map_width * scene.environment_map_height;
+
+    CUDA_CHECK(cudaMalloc(&scene_copy.spheres,          scene.sphere_count   * sizeof(Sphere)));
+    CUDA_CHECK(cudaMalloc(&scene_copy.triangles,        scene.triangle_count * sizeof(Triangle)));
+    CUDA_CHECK(cudaMalloc(&scene_copy.materials,        scene.material_count * sizeof(Material)));
+    CUDA_CHECK(cudaMalloc(&scene_copy.material_indices, primitive_count      * sizeof(uint16_t)));
+    CUDA_CHECK(cudaMalloc(&scene_copy.bvh,              scene.bvh_node_count * sizeof(BvhNode)));
+    CUDA_CHECK(cudaMalloc(&scene_copy.environment_map,  environment_map_size * sizeof(Vec3)));
+
+    CUDA_CHECK(cudaMemcpyAsync(scene_copy.spheres,          scene.spheres,          sizeof(Sphere)   * scene.sphere_count,   cudaMemcpyHostToDevice, stream));    
+    CUDA_CHECK(cudaMemcpyAsync(scene_copy.triangles,        scene.triangles,        sizeof(Triangle) * scene.triangle_count, cudaMemcpyHostToDevice, stream));
+    CUDA_CHECK(cudaMemcpyAsync(scene_copy.materials,        scene.materials,        sizeof(Material) * scene.material_count, cudaMemcpyHostToDevice, stream));
+    CUDA_CHECK(cudaMemcpyAsync(scene_copy.material_indices, scene.material_indices, sizeof(uint16_t) * primitive_count,      cudaMemcpyHostToDevice, stream));
+    CUDA_CHECK(cudaMemcpyAsync(scene_copy.bvh,              scene.bvh,              sizeof(BvhNode)  * scene.bvh_node_count, cudaMemcpyHostToDevice, stream));
+    CUDA_CHECK(cudaMemcpyAsync(scene_copy.environment_map,  scene.environment_map,  sizeof(Vec3)     * environment_map_size, cudaMemcpyHostToDevice, stream));
+
+    CUDA_CHECK(cudaMemcpyToSymbol(this, &scene_copy, sizeof(Scene)));
+}
+
+void Scene::free_from_gpu()
+{
+    Scene scene_copy;
+    CUDA_CHECK(cudaMemcpyFromSymbol(&scene_copy, this, sizeof(Scene)));
+    
+    CUDA_CHECK(cudaFree(scene_copy.environment_map));
+    CUDA_CHECK(cudaFree(scene_copy.material_indices));
+    CUDA_CHECK(cudaFree(scene_copy.materials));
+    CUDA_CHECK(cudaFree(scene_copy.bvh));
+    CUDA_CHECK(cudaFree(scene_copy.triangles));
+    CUDA_CHECK(cudaFree(scene_copy.spheres));
+}
+
+
 // Maybe it makes sense to pre-convert to a cubemap instead of doing this every time a ray misses
 COMMON Vec3 equal_area_project_sphere_to_square(const Vec3 &direction)
 {

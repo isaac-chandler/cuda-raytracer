@@ -106,6 +106,9 @@ struct Scene
 
     void generate_bvh(int max_depth);
 
+    void copy_from_cpu_async(const Scene &cpu_scene, cudaStream_t stream);
+    void free_from_gpu();
+
     COMMON void bvh_closest_hit_distance(const Ray &ray, float &closest_hit_distance, int &closest_hit_index) const;
 
     COMMON void generate_initial_rays(RayData *ray_data, unsigned int *ray_indices, unsigned int *ray_keys, int rays_per_pixel, int ray_index, int seed) const;
