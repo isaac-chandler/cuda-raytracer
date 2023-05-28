@@ -16,134 +16,128 @@
 #include "scene.cuh"
 #include "random.cuh"
 
-__constant__ Scene cuda_scene;
+Scene cuda_scene;
 
 
-__device__ bool IntersectRaySphere(const Ray& ray, const Sphere& sphere, float& t)
-{
-    Vec3 oc = ray.origin - sphere.center;
-    float a = dot(ray.direction, ray.direction);
-    float b = 2.0f * dot(oc, ray.direction);
-    float c = dot(oc, oc) - sphere.radius * sphere.radius;
 
-    float discriminant = b * b - 4.0f * a * c;
 
-    if (discriminant > 0.0f)
-    {
-        float t0 = (-b - sqrtf(discriminant)) / (2.0f * a);
-        float t1 = (-b + sqrtf(discriminant)) / (2.0f * a);
+// class BVHNode {
+// public:
+//     BVHNode* left;
+//     BVHNode* right;
+//     AABB boundingBox; // Axis Aligned Bounding Box
 
-        if (t0 > 0.0f)
-        {
-            t = t0;
-            return true;
-        }
-        else if (t1 > 0.0f)
-        {
-            t = t1;
-            return true;
+//     BVHNode(std::vector<Object*>& objects);
+// };
+
+// BVHNode::BVHNode(std::vector<Object*>& objects) {
+//     // Sort objects and create bounding boxes here.
+//     // This is a simple binary BVH construction for demonstration purposes.
+//     if (objects.size() == 1) {
+//         // This is a leaf node
+//         left = nullptr;
+//         right = nullptr;
+//         boundingBox = objects[0]->getBoundingBox();
+//     } else {
+//         // This is an internal node
+//         // Sort objects according to their bounding boxes on the x-axis
+//         std::sort(objects.begin(), objects.end(), [](Object* a, Object* b) {
+//             return a->getBoundingBox().min().x < b->getBoundingBox().min().x;
+//         });
+
+//         // Split objects into two halves
+//         std::size_t const half_size = objects.size() / 2;
+//         std::vector<Object*> left_half(objects.begin(), objects.begin() + half_size);
+//         std::vector<Object*> right_half(objects.begin() + half_size, objects.end());
+
+//         // Create child nodes
+//         left = new BVHNode(left_half);
+//         right = new BVHNode(right_half);
+
+//         // Compute the bounding box of this node as the union of the child bounding boxes
+//         boundingBox = AABB::unionBoxes(left->boundingBox, right->boundingBox);
+//     }
+// }
+
+
+
+
+
+// __global__ void cuda_process_rays(Ray& ray, BVHNode* node, xor_random& rng) {
+//     // We need to intersect the ray with the BVH recursively
+//     if (node == nullptr || !node->boundingBox.intersect(ray)) {
+//         return;
+//     }
+
+//     if (node->isLeaf()) {
+//         // Intersect ray with the object in the leaf node
+//         // This object is stored in the 'object' field of the node
+//         Object* object = node->object;
+//         // Compute intersection and update ray's payload
+//         object->intersect(ray, rng);
+//     } else {
+//         // This is an internal node, intersect with its children
+//         process_ray(ray, node->left, rng);
+//         process_ray(ray, node->right, rng);
+//     }
+// }
+
+
+
+__global__ void high_pass_filter(Vec3* image, Vec3* bright_parts, float threshold, int pixel_count) {
+    int index = blockIdx.x * blockDim.x + threadIdx.x;
+    if (index < pixel_count) {
+        float brightness = dot(image[index], Vec3(0.2126f, 0.7152f, 0.0722f));  // Weighted sum for perceived luminance
+        if (brightness > threshold) {
+            bright_parts[index] = image[index];
+        } else {
+            bright_parts[index] = Vec3(0, 0, 0);
         }
     }
-
-    return false;
 }
 
-
-__device__ Vec3 ComputeHitPoint(const Ray& ray)
-{
-    // Initialize the hit point to an invalid value
-    Vec3 hit_point = {FLT_MAX, FLT_MAX, FLT_MAX};
-
-    // Iterate over all spheres in the scene
-    for (int i = 0; i < cuda_scene.sphere_count; i++)
-    {
-        const Sphere& sphere = cuda_scene.spheres[i];
-        // Perform ray-sphere intersection test
-        // Implemented the intersection algorithm  above  it is a very simple algo
-        float t;
-        if (IntersectRaySphere(ray, sphere, t))
-        {
-            // Update the hit point if the new intersection point is closer
-            if (t < hit_point.x)
-            {
-                hit_point = ray.origin + (t* ray.direction );
+__global__ void box_blur_horizontal(Vec3* image, Vec3* blurred_image, int radius, int width, int height) {
+    int index = blockIdx.x * blockDim.x + threadIdx.x;
+    if (index < width * height) {
+        int x = index % width;
+        int y = index / width;
+        Vec3 sum(0, 0, 0);
+        int count = 0;
+        for (int dx = -radius; dx <= radius; dx++) {
+            int nx = x + dx;
+            if (nx >= 0 && nx < width) {
+                sum += image[y * width + nx];
+                count++;
             }
         }
+        blurred_image[index] = (1.0f / count)*sum ;
     }
-
-    return hit_point;
-}
-__device__ uint32_t InterleaveBits(uint32_t value)   // 16 bit 0 to 1
-{
-    value = (value | (value << 16)) & 0x0000FFFF;
-    value = (value | (value << 8)) & 0x00FF00FF;
-    value = (value | (value << 4)) & 0x0F0F0F0F;
-    value = (value | (value << 2)) & 0x33333333;
-    value = (value | (value << 1)) & 0x55555555;
-
-    return value;
 }
 
-__device__ uint64_t CalculateZCurvePosition(const Vec3& hit_point)
-{
-    
-
-    // Normalize the hit point coordinates to the range [0, 1]
-    float x = (hit_point.x - cuda_scene.min_coord.x) * cuda_scene.inv_dimensions.x;
-    float y = (hit_point.y - cuda_scene.min_coord.y) * cuda_scene.inv_dimensions.y;
-    float z = (hit_point.z - cuda_scene.min_coord.z) * cuda_scene.inv_dimensions.z;
-
-    // Convert the normalized coordinates to integer values in the range [0, UINT_MAX]
-    uint32_t xi = static_cast<uint32_t>(x * UINT_MAX);
-    uint32_t yi = static_cast<uint32_t>(y * UINT_MAX);
-    uint32_t zi = static_cast<uint32_t>(z * UINT_MAX);
-
-    // Interleave the bits of the x, y, and z coordinates to create the Z-curve position
-    uint64_t position = InterleaveBits(xi) | (InterleaveBits(yi) << 1) | (InterleaveBits(zi) << 2);
-
-    return position;
-}
-
-
-__device__ bool CompareHitPoints(const RayData& ray1, const RayData& ray2)
-{
-    // Compute the Z-curve position for each ray's hit point
-
-    // Extract the hit points from the ray data
-    Vec3 hit_point1 = ray1.ray.origin + ray1.ray.direction * ray1.hit_point;  // may be ray1_pint is wrong 
-    Vec3 hit_point2 = ray2.ray.origin + ray2.ray.direction * ray2.hit_point;  // same issue may be there
-
-    // Calculate the Z-curve position based on the hit points
-    uint64_t position1 = CalculateZCurvePosition(hit_point1);
-    uint64_t position2 = CalculateZCurvePosition(hit_point2);
-
-    // Compare the Z-curve positions
-    return position1 < position2;
-}
-__device__ void ReorderRays(RayData* ray_data, unsigned int* ray_indices, unsigned int* keys, int ray_count)
-{
-    for (int i = 1; i < ray_count; ++i)
-    {
-        RayData current_ray_data = ray_data[i];
-        unsigned int current_key = keys[i];
-        unsigned int current_ray_index = ray_indices[i];
-
-        int j = i - 1;
-        while (j >= 0 && CompareHitPoints(ray_data[j], current_ray_data))
-        {
-            ray_data[j + 1] = ray_data[j];
-            keys[j + 1] = keys[j];
-            ray_indices[j + 1] = ray_indices[j];
-            --j;
+__global__ void box_blur_vertical(Vec3* image, Vec3* blurred_image, int radius, int width, int height) {
+    int index = blockIdx.x * blockDim.x + threadIdx.x;
+    if (index < width * height) {
+        int x = index % width;
+        int y = index / width;
+        Vec3 sum(0, 0, 0);
+        int count = 0;
+        for (int dy = -radius; dy <= radius; dy++) {
+            int ny = y + dy;
+            if (ny >= 0 && ny < height) {
+                sum += image[ny * width + x];
+                count++;
+            }
         }
-
-        ray_data[j + 1] = current_ray_data;
-        keys[j + 1] = current_key;
-        ray_indices[j + 1] = current_ray_index;
+        blurred_image[index] = (1.0f / count)*sum;
     }
 }
 
-
+__global__ void add_images(Vec3* image, Vec3* bloom, int pixel_count) {
+    int index = blockIdx.x * blockDim.x + threadIdx.x;
+    if (index < pixel_count) {
+        image[index] += bloom[index];
+    }
+}
 
 
 __global__ void cuda_generate_initial_rays(RayData *ray_data, unsigned int *ray_indices, unsigned int *ray_keys, int rays_per_pixel, int seed)
@@ -151,13 +145,11 @@ __global__ void cuda_generate_initial_rays(RayData *ray_data, unsigned int *ray_
     int index = blockIdx.x * blockDim.x + threadIdx.x;
 
     cuda_scene.generate_initial_rays(ray_data, ray_indices, ray_keys, rays_per_pixel, index, seed);
-    ray_data[index].hit_point = ComputeHitPoint(ray_data[index].ray); //ComputeHitPoint with  intersection computation 
 }
 
 __global__ void cuda_process_rays(RayData *ray_data, unsigned int *ray_indices, unsigned int *keys, int ray_count, int seed)
 {
     int ray_index = blockIdx.x * blockDim.x + threadIdx.x;
-    ReorderRays(ray_data, ray_indices, keys, ray_count); // `ReorderRays`
     if (ray_index < ray_count)
     {
         xor_random rng;
@@ -165,7 +157,7 @@ __global__ void cuda_process_rays(RayData *ray_data, unsigned int *ray_indices, 
 
         cuda_scene.process_ray(ray_data + ray_indices[ray_index], keys + ray_index, rng);
     }
-    //ReorderRays(ray_data, ray_indices, keys, ray_count); // `ReorderRays` 
+     
 }
 
 __global__ void cuda_accumulate_rays(Vec3 *framebuffer, RayData *ray_data, int rays_per_pixel, int pixel_count)
@@ -430,10 +422,43 @@ int main(int argc, char **argv)
 
     if (gpu)
     {
-        Vec3 *framebuffer = gpu_raytrace(&scene, sort);
+        Vec3 *framebuffer = gpu_raytrace(&scene, sort);  //ray tracing
+            // Wait for the GPU to finish before accessing on host
+        cudaDeviceSynchronize();
 
-        write_framebuffer_to_output_image(&scene, output_image, framebuffer);
+        int pixel_count = scene.width * scene.height;
+        dim3 block_size(128);
+        dim3 grid_size((pixel_count + block_size.x - 1) / block_size.x);
+           // Declare d_image and allocate memory
+        Vec3* d_image;
+        cudaMalloc(&d_image, pixel_count * sizeof(Vec3));
+
+        // Copy framebuffer to d_image
+        cudaMemcpy(d_image, framebuffer, pixel_count * sizeof(Vec3), cudaMemcpyHostToDevice);
+        // Create device memory for the bright parts of the image and the blurred image
+        Vec3* d_bright_parts;
+        Vec3* d_blurred_image;
+        cudaMalloc(&d_bright_parts, pixel_count * sizeof(Vec3));
+        cudaMalloc(&d_blurred_image, pixel_count * sizeof(Vec3));
+
+        // Extract the bright parts of the image
+        high_pass_filter<<<grid_size, block_size>>>(d_image, d_bright_parts, 0.4, pixel_count); // change threshold for various images
+        cudaDeviceSynchronize();
+
+        // Blur the bright parts (repeat this with different radii for a better effect)
+        box_blur_horizontal<<<grid_size, block_size>>>(d_bright_parts, d_blurred_image, 5, scene.width, scene.height);// change radius of blur
+        box_blur_vertical<<<grid_size, block_size>>>(d_blurred_image, d_bright_parts, 5, scene.width, scene.height); //change radius of blur
+        cudaDeviceSynchronize();
+
+        // Add the blurred image back to the original image
+        add_images<<<grid_size, block_size>>>(d_image, d_bright_parts, pixel_count);
+        cudaDeviceSynchronize();
+        write_framebuffer_to_output_image(&scene, output_image, d_image);
         delete[] framebuffer;
+        // Free the device memory
+        cudaFree(d_image);
+        cudaFree(d_bright_parts);
+        cudaFree(d_blurred_image);
     }
 
     stbi_write_png("raytracing.png", scene.width, output_image.size() / scene.width / 3, 3, &output_image.front(), scene.width * 3);
