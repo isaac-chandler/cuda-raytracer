@@ -16,78 +16,14 @@
 #include "scene.cuh"
 #include "random.cuh"
 
-Scene cuda_scene;
-
-
-
-
-// class BVHNode {
-// public:
-//     BVHNode* left;
-//     BVHNode* right;
-//     AABB boundingBox; // Axis Aligned Bounding Box
-
-//     BVHNode(std::vector<Object*>& objects);
-// };
-
-// BVHNode::BVHNode(std::vector<Object*>& objects) {
-//     // Sort objects and create bounding boxes here.
-//     // This is a simple binary BVH construction for demonstration purposes.
-//     if (objects.size() == 1) {
-//         // This is a leaf node
-//         left = nullptr;
-//         right = nullptr;
-//         boundingBox = objects[0]->getBoundingBox();
-//     } else {
-//         // This is an internal node
-//         // Sort objects according to their bounding boxes on the x-axis
-//         std::sort(objects.begin(), objects.end(), [](Object* a, Object* b) {
-//             return a->getBoundingBox().min().x < b->getBoundingBox().min().x;
-//         });
-
-//         // Split objects into two halves
-//         std::size_t const half_size = objects.size() / 2;
-//         std::vector<Object*> left_half(objects.begin(), objects.begin() + half_size);
-//         std::vector<Object*> right_half(objects.begin() + half_size, objects.end());
-
-//         // Create child nodes
-//         left = new BVHNode(left_half);
-//         right = new BVHNode(right_half);
-
-//         // Compute the bounding box of this node as the union of the child bounding boxes
-//         boundingBox = AABB::unionBoxes(left->boundingBox, right->boundingBox);
-//     }
-// }
-
-
-
-
-
-// __global__ void cuda_process_rays(Ray& ray, BVHNode* node, xor_random& rng) {
-//     // We need to intersect the ray with the BVH recursively
-//     if (node == nullptr || !node->boundingBox.intersect(ray)) {
-//         return;
-//     }
-
-//     if (node->isLeaf()) {
-//         // Intersect ray with the object in the leaf node
-//         // This object is stored in the 'object' field of the node
-//         Object* object = node->object;
-//         // Compute intersection and update ray's payload
-//         object->intersect(ray, rng);
-//     } else {
-//         // This is an internal node, intersect with its children
-//         process_ray(ray, node->left, rng);
-//         process_ray(ray, node->right, rng);
-//     }
-// }
+__constant__ Scene cuda_scene;
 
 
 
 __global__ void high_pass_filter(Vec3* image, Vec3* bright_parts, float threshold, int pixel_count) {
     int index = blockIdx.x * blockDim.x + threadIdx.x;
     if (index < pixel_count) {
-        float brightness = dot(image[index], Vec3(0.2126f, 0.7152f, 0.0722f));  // Weighted sum for perceived luminance
+        float brightness = dot(image[index], Vec3{0.2126f, 0.7152f, 0.0722f});  // Weighted sum for perceived luminance
         if (brightness > threshold) {
             bright_parts[index] = image[index];
         } else {

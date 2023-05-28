@@ -11,9 +11,9 @@ COMMON T lerp(float amount, const T& a, const T& b)
 struct Vec3 
 {
     float x, y, z;
-    Vec3() : x(0.0f), y(0.0f), z(0.0f) {}
 
-    Vec3(float x, float y, float z) : x(x), y(y), z(z) {}
+    COMMON Vec3() : x(0.0f), y(0.0f), z(0.0f) {}
+    COMMON Vec3(float x, float y, float z) : x(x), y(y), z(z) {}
     
      COMMON Vec3 &operator*=(const Vec3& other)
     {
@@ -67,7 +67,7 @@ struct Vec3
     }
 };
 
-COMMON inline  __host__ __device__ float dot(const Vec3 &a, const Vec3 &b)
+COMMON inline   float dot(const Vec3 &a, const Vec3 &b)
 {
     return a.x * b.x + a.y * b.y + a.z * b.z;
 }
@@ -106,7 +106,7 @@ COMMON inline Vec3 operator*(const Vec3 &a, const Vec3 &b)
     return {a.x * b.x, a.y * b.y, a.z * b.z};
 }
 
-COMMON inline  __host__ __device__ Vec3 operator*(float scalar, const Vec3 &vector)
+COMMON inline   Vec3 operator*(float scalar, const Vec3 &vector)
 {
     return {scalar * vector.x, scalar * vector.y, scalar * vector.z};
 }
