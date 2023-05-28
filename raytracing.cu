@@ -18,16 +18,14 @@
 
 __constant__ Scene cuda_scene;
 
-
-
 __global__ void high_pass_filter(Vec3* image, Vec3* bright_parts, float threshold, int pixel_count) {
     int index = blockIdx.x * blockDim.x + threadIdx.x;
     if (index < pixel_count) {
-        float brightness = dot(image[index], Vec3{0.2126f, 0.7152f, 0.0722f});  // Weighted sum for perceived luminance
+        float brightness = dot(image[index], {0.2126f, 0.7152f, 0.0722f});  // Weighted sum for perceived luminance
         if (brightness > threshold) {
             bright_parts[index] = image[index];
         } else {
-            bright_parts[index] = Vec3(0, 0, 0);
+            bright_parts[index] = {0, 0, 0};
         }
     }
 }
@@ -37,7 +35,7 @@ __global__ void box_blur_horizontal(Vec3* image, Vec3* blurred_image, int radius
     if (index < width * height) {
         int x = index % width;
         int y = index / width;
-        Vec3 sum(0, 0, 0);
+        Vec3 sum = {0, 0, 0};
         int count = 0;
         for (int dx = -radius; dx <= radius; dx++) {
             int nx = x + dx;
@@ -55,7 +53,7 @@ __global__ void box_blur_vertical(Vec3* image, Vec3* blurred_image, int radius, 
     if (index < width * height) {
         int x = index % width;
         int y = index / width;
-        Vec3 sum(0, 0, 0);
+        Vec3 sum = {0, 0, 0};
         int count = 0;
         for (int dy = -radius; dy <= radius; dy++) {
             int ny = y + dy;
@@ -74,7 +72,6 @@ __global__ void add_images(Vec3* image, Vec3* bloom, int pixel_count) {
         image[index] += bloom[index];
     }
 }
-
 
 __global__ void cuda_generate_initial_rays(RayData *ray_data, unsigned int *ray_indices, unsigned int *ray_keys, int rays_per_pixel, int seed)
 {
@@ -359,42 +356,40 @@ int main(int argc, char **argv)
     if (gpu)
     {
         Vec3 *framebuffer = gpu_raytrace(&scene, sort);  //ray tracing
-            // Wait for the GPU to finish before accessing on host
-        cudaDeviceSynchronize();
 
         int pixel_count = scene.width * scene.height;
         dim3 block_size(128);
         dim3 grid_size((pixel_count + block_size.x - 1) / block_size.x);
            // Declare d_image and allocate memory
         Vec3* d_image;
-        cudaMalloc(&d_image, pixel_count * sizeof(Vec3));
+        CUDA_CHECK(cudaMalloc(&d_image, pixel_count * sizeof(Vec3)));
 
         // Copy framebuffer to d_image
-        cudaMemcpy(d_image, framebuffer, pixel_count * sizeof(Vec3), cudaMemcpyHostToDevice);
+        CUDA_CHECK(cudaMemcpy(d_image, framebuffer, pixel_count * sizeof(Vec3), cudaMemcpyHostToDevice));
         // Create device memory for the bright parts of the image and the blurred image
         Vec3* d_bright_parts;
         Vec3* d_blurred_image;
-        cudaMalloc(&d_bright_parts, pixel_count * sizeof(Vec3));
-        cudaMalloc(&d_blurred_image, pixel_count * sizeof(Vec3));
+        CUDA_CHECK(cudaMalloc(&d_bright_parts, pixel_count * sizeof(Vec3)));
+        CUDA_CHECK(cudaMalloc(&d_blurred_image, pixel_count * sizeof(Vec3)));
 
         // Extract the bright parts of the image
-        high_pass_filter<<<grid_size, block_size>>>(d_image, d_bright_parts, 0.4, pixel_count); // change threshold for various images
-        cudaDeviceSynchronize();
+        high_pass_filter<<<grid_size, block_size>>>(d_image, d_bright_parts, 0.9 * scene.ray_count, pixel_count); // change threshold for various images
 
         // Blur the bright parts (repeat this with different radii for a better effect)
         box_blur_horizontal<<<grid_size, block_size>>>(d_bright_parts, d_blurred_image, 5, scene.width, scene.height);// change radius of blur
         box_blur_vertical<<<grid_size, block_size>>>(d_blurred_image, d_bright_parts, 5, scene.width, scene.height); //change radius of blur
-        cudaDeviceSynchronize();
-
         // Add the blurred image back to the original image
         add_images<<<grid_size, block_size>>>(d_image, d_bright_parts, pixel_count);
-        cudaDeviceSynchronize();
-        write_framebuffer_to_output_image(&scene, output_image, d_image);
+        CUDA_CHECK(cudaDeviceSynchronize());
+
+        CUDA_CHECK(cudaMemcpy(framebuffer, d_image, pixel_count * sizeof(Vec3), cudaMemcpyDeviceToHost));
+
+        write_framebuffer_to_output_image(&scene, output_image, framebuffer);
         delete[] framebuffer;
         // Free the device memory
-        cudaFree(d_image);
-        cudaFree(d_bright_parts);
-        cudaFree(d_blurred_image);
+        CUDA_CHECK(cudaFree(d_image));
+        CUDA_CHECK(cudaFree(d_bright_parts));
+        CUDA_CHECK(cudaFree(d_blurred_image));
     }
 
     stbi_write_png("raytracing.png", scene.width, output_image.size() / scene.width / 3, 3, &output_image.front(), scene.width * 3);

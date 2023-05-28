@@ -12,10 +12,7 @@ struct Vec3
 {
     float x, y, z;
 
-    COMMON Vec3() : x(0.0f), y(0.0f), z(0.0f) {}
-    COMMON Vec3(float x, float y, float z) : x(x), y(y), z(z) {}
-    
-     COMMON Vec3 &operator*=(const Vec3& other)
+    COMMON Vec3 &operator*=(const Vec3& other)
     {
         x *= other.x;
         y *= other.y;
@@ -24,7 +21,7 @@ struct Vec3
         return *this;
     }
 
-     COMMON Vec3 &operator+=(const Vec3& other)
+    COMMON Vec3 &operator+=(const Vec3& other)
     {
         x += other.x;
         y += other.y;
@@ -33,7 +30,7 @@ struct Vec3
         return *this;
     }
 
-     COMMON Vec3 &operator-=(const Vec3& other)
+    COMMON Vec3 &operator-=(const Vec3& other)
     {
         x -= other.x;
         y -= other.y;
@@ -42,7 +39,7 @@ struct Vec3
         return *this;
     }
 
-     COMMON Vec3 &operator*=(float scalar)
+    COMMON Vec3 &operator*=(float scalar)
     {
         x *= scalar;
         y *= scalar;
@@ -51,7 +48,7 @@ struct Vec3
         return *this;
     }
 
-     COMMON Vec3 operator-() const
+    COMMON Vec3 operator-() const
     {
         return {-x, -y, -z};
     }
@@ -67,7 +64,7 @@ struct Vec3
     }
 };
 
-COMMON inline   float dot(const Vec3 &a, const Vec3 &b)
+COMMON inline float dot(const Vec3 &a, const Vec3 &b)
 {
     return a.x * b.x + a.y * b.y + a.z * b.z;
 }
@@ -106,7 +103,7 @@ COMMON inline Vec3 operator*(const Vec3 &a, const Vec3 &b)
     return {a.x * b.x, a.y * b.y, a.z * b.z};
 }
 
-COMMON inline   Vec3 operator*(float scalar, const Vec3 &vector)
+COMMON inline Vec3 operator*(float scalar, const Vec3 &vector)
 {
     return {scalar * vector.x, scalar * vector.y, scalar * vector.z};
 }
@@ -143,5 +140,3 @@ COMMON inline Vec3 max(const Vec3 &a, const Vec3 &b)
         max(a.z, b.z), 
     };
 }
-
-
