@@ -373,7 +373,7 @@ int main(int argc, char **argv)
         CUDA_CHECK(cudaMalloc(&d_blurred_image, pixel_count * sizeof(Vec3)));
 
         // Extract the bright parts of the image
-        high_pass_filter<<<grid_size, block_size>>>(d_image, d_bright_parts, 0.9 * scene.ray_count, pixel_count); // change threshold for various images
+        high_pass_filter<<<grid_size, block_size>>>(d_image, d_bright_parts, 0.7 * scene.ray_count, pixel_count); // change threshold for various images
 
         // Blur the bright parts (repeat this with different radii for a better effect)
         box_blur_horizontal<<<grid_size, block_size>>>(d_bright_parts, d_blurred_image, 5, scene.width, scene.height);// change radius of blur
