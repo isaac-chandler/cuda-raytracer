@@ -24,7 +24,7 @@ template<typename T> COMMON T load_read_only(T *t)
 
         COMMON Dummy() {}
     };
-    
+
     Dummy dummy;
 
     #pragma unroll
@@ -37,26 +37,6 @@ template<typename T> COMMON T load_read_only(T *t)
 #else
     return *t;
 #endif
-}
-
-// Convert number of the form 0bABCDE to
-// 0b00A00B00C00D00E
-__device__ unsigned short interleave_5(unsigned short x)
-{
-    x = (x | (x << 8)) & 0b1000000001111;
-    x = (x | (x << 4)) & 0x1000010100011;
-    x = (x | (x << 2)) & 0b1001001001001;
-
-    return x;
-}
-
-__device__ unsigned short morton_code(const Vec3 &vec)
-{
-    unsigned short x = (unsigned short) (vec.x * 31.99);
-    unsigned short y = (unsigned short) (vec.y * 31.99);
-    unsigned short z = (unsigned short) (vec.z * 31.99);
-
-    return interleave_5(x) | (interleave_5(y) << 1) | (interleave_5(z) << 2);
 }
 
 void Scene::precompute_camera_data()
@@ -75,7 +55,7 @@ void Scene::precompute_camera_data()
     inv_height = 1.0f / (height - 1);
 }
 
-COMMON void Scene::generate_initial_rays(RayData *ray_data, unsigned int *ray_indices, unsigned int *ray_keys, int rays_per_pixel, int ray_index, int seed) const
+COMMON void Scene::generate_initial_rays(RayData *ray_data, int rays_per_pixel, int ray_index, int seed) const
 {
     xor_random rng;
     xor_srand(&rng, ray_index * 298592570346 + 709579 * seed);
@@ -87,10 +67,6 @@ COMMON void Scene::generate_initial_rays(RayData *ray_data, unsigned int *ray_in
 
     if (y < height)
     {
-#ifdef __CUDA_ARCH__
-            ray_indices[ray_index] = ray_index;
-            ray_keys[ray_index] = 0;
-#endif
         float x_clamped = (x + random01(&rng)) * inv_width;
         float y_clamped = (y + random01(&rng)) * inv_height;
 
@@ -154,7 +130,7 @@ COMMON void Scene::bvh_closest_hit_distance(const Ray &ray, float &closest_hit_d
 
         BvhNode node = load_read_only(&bvh[node_index_stack[stack_count]]);
 
-        
+
         if (node.is_leaf())
         {
             for (int i = node.child2; i < node.child1; i++)
@@ -254,7 +230,7 @@ void Scene::copy_from_cpu_async(const Scene &scene, cudaStream_t stream)
     CUDA_CHECK(cudaMalloc(&scene_copy.bvh,              scene.bvh_node_count * sizeof(BvhNode)));
     CUDA_CHECK(cudaMalloc(&scene_copy.environment_map,  environment_map_size * sizeof(Vec3)));
 
-    CUDA_CHECK(cudaMemcpyAsync(scene_copy.spheres,          scene.spheres,          sizeof(Sphere)   * scene.sphere_count,   cudaMemcpyHostToDevice, stream));    
+    CUDA_CHECK(cudaMemcpyAsync(scene_copy.spheres,          scene.spheres,          sizeof(Sphere)   * scene.sphere_count,   cudaMemcpyHostToDevice, stream));
     CUDA_CHECK(cudaMemcpyAsync(scene_copy.triangles,        scene.triangles,        sizeof(Triangle) * scene.triangle_count, cudaMemcpyHostToDevice, stream));
     CUDA_CHECK(cudaMemcpyAsync(scene_copy.materials,        scene.materials,        sizeof(Material) * scene.material_count, cudaMemcpyHostToDevice, stream));
     CUDA_CHECK(cudaMemcpyAsync(scene_copy.material_indices, scene.material_indices, sizeof(uint16_t) * primitive_count,      cudaMemcpyHostToDevice, stream));
@@ -268,7 +244,7 @@ void Scene::free_from_gpu()
 {
     Scene scene_copy;
     CUDA_CHECK(cudaMemcpyFromSymbol(&scene_copy, *this, sizeof(Scene)));
-    
+
     CUDA_CHECK(cudaFree(scene_copy.environment_map));
     CUDA_CHECK(cudaFree(scene_copy.material_indices));
     CUDA_CHECK(cudaFree(scene_copy.materials));
@@ -317,15 +293,10 @@ COMMON Vec3 equal_area_project_sphere_to_square(const Vec3 &direction)
     return {(u + 1) * 0.5f, (v + 1) * 0.5f, 0};
 }
 
-COMMON void Scene::process_ray(RayData *ray_data_ptr, unsigned int *ray_key, xor_random rng) const
+COMMON void Scene::process_ray(RayData *ray_data_ptr, xor_random rng) const
 {
-#ifdef __CUDA_ARCH__
-    if (*ray_key == 0xFFFF'FFFF)
-        return;
-#else
     if (ray_data_ptr->transmitted_color.x == 0 && ray_data_ptr->transmitted_color.y == 0 && ray_data_ptr->transmitted_color.z == 0)
         return;
-#endif
 
     RayData ray_data = *ray_data_ptr;
 
@@ -340,7 +311,7 @@ COMMON void Scene::process_ray(RayData *ray_data_ptr, unsigned int *ray_key, xor
         const auto sphere = spheres[i];
 
         Vec3 offset = sphere.center - ray.origin;
-        
+
 
         float minus_half_b = dot(offset, ray.direction);
         float quarter_c = magnitude_squared(offset) - sphere.radius * sphere.radius;
@@ -375,7 +346,7 @@ COMMON void Scene::process_ray(RayData *ray_data_ptr, unsigned int *ray_key, xor
 
     if (closest_hit_index == -1)
     {
-        // Environment map in our test data is rotated and has y and z axes flipped, 
+        // Environment map in our test data is rotated and has y and z axes flipped,
         // apply a hardcoded transformation for now.
         float dir_x = ray.direction.x * -0.386527 + ray.direction.z * 0.922278;
         float dir_y = ray.direction.x * -0.922278 + ray.direction.z * -0.386527;
@@ -413,7 +384,7 @@ COMMON void Scene::process_ray(RayData *ray_data_ptr, unsigned int *ray_key, xor
         const auto material = load_read_only(&materials[material_indices[closest_hit_index]]);
 
         ray_data.collected_color += material.emitted * ray_data.transmitted_color;
-        
+
 
         bool front_face = dot(normal, ray.direction) < 0;
 
@@ -437,7 +408,7 @@ COMMON void Scene::process_ray(RayData *ray_data_ptr, unsigned int *ray_key, xor
             else
             {
                 ray_data.transmitted_color *= material.diffuse_albedo;
-                ray_data.ray.direction = normalise(normal + random_on_sphere(&rng)); 
+                ray_data.ray.direction = normalise(normal + random_on_sphere(&rng));
             }
         }
         else
@@ -463,12 +434,12 @@ COMMON void Scene::process_ray(RayData *ray_data_ptr, unsigned int *ray_key, xor
             if (sin_theta_squared > inv_ior * inv_ior || random01(&rng) < reflectance)
             {
                 ray_data.transmitted_color *= material.specular_albedo;
-                ray_data.ray.direction = ray.direction - 2 * cos_theta * rough_normal;                
+                ray_data.ray.direction = ray.direction - 2 * cos_theta * rough_normal;
             }
             else
             {
                 ray_data.transmitted_color *= material.diffuse_albedo;
-                
+
                 Vec3 r_out_perp = ior * (ray.direction - cos_theta * rough_normal);
                 Vec3 r_out_parallel = -sqrtf(1 - magnitude_squared(r_out_perp)) * rough_normal;
                 ray_data.ray.direction = normalise(r_out_parallel + r_out_perp);
@@ -476,13 +447,6 @@ COMMON void Scene::process_ray(RayData *ray_data_ptr, unsigned int *ray_key, xor
         }
     }
 
-
-#ifdef __CUDA_ARCH__
-    if (ray_data.transmitted_color.x == 0 && ray_data.transmitted_color.y == 0 && ray_data.transmitted_color.z == 0)
-        *ray_key = 0xFFFF'FFFF;
-    else
-        *ray_key = ((unsigned int) morton_code((ray_data.ray.origin - min_coord) * inv_dimensions) << 16) | (unsigned int) morton_code(0.5 * (ray_data.ray.direction + Vec3{1, 1, 1}));
-#endif
     *ray_data_ptr = ray_data;
 }
 
@@ -554,7 +518,7 @@ Vec3 *load_pfm(const std::string &filename, int *width, int *height)
     std::getline(file, line);
 
     std::stringstream ss(line);
-    
+
     ss >> *width;
     ss >> *height;
 
@@ -566,7 +530,7 @@ Vec3 *load_pfm(const std::string &filename, int *width, int *height)
     return image;
 }
 
-void load_scene(Scene *scene, const char *filename, bool use_bvh)
+void load_scene(Scene *scene, const char *filename)
 {
     scene->width = 1920;
     scene->height = 1080;
@@ -803,7 +767,7 @@ void load_scene(Scene *scene, const char *filename, bool use_bvh)
     scene->sphere_count = spheres.size();
     scene->spheres = new Sphere[spheres.size()];
     std::copy(spheres.begin(), spheres.end(), scene->spheres);
-    
+
     scene->triangle_count = triangles.size();
     scene->triangles = new Triangle[triangles.size()];
     std::copy(triangles.begin(), triangles.end(), scene->triangles);
@@ -817,7 +781,7 @@ void load_scene(Scene *scene, const char *filename, bool use_bvh)
     scene->material_count = (uint16_t) materials.size();
 
     scene->precompute_camera_data();
-    scene->generate_bvh(use_bvh ? MAX_BVH_DEPTH : 0);
+    scene->generate_bvh(MAX_BVH_DEPTH);
 
     scene->min_coord = scene->bvh[0].aabb.min_bound;
     Vec3 scene_max_coord = scene->bvh[0].aabb.max_bound;
@@ -1013,7 +977,7 @@ void Scene::generate_bvh(int max_depth)
 
     root.child2 = 0;
     root.child1 = triangle_count;
-    
+
     root.maybe_split(this, bvh_nodes, max_depth);
 
     bvh_node_count = bvh_nodes.size();

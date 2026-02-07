@@ -14,12 +14,12 @@ struct __align__(16) Sphere
 
 // Triangles have two different representations during the program
 // If p1, p2 and p3 are the triangle vertices then:
-// During ray tracing: 
+// During ray tracing:
 //  - p1 = p1
 //  - p2p1 = p2 - p1
 //  - p3p1 = p3 - p1
 //  - normal = (p2 - p1) x (p3 - p1) [x means cross product]
-// During BVH construction: 
+// During BVH construction:
 //  - p1 = p1
 //  - p2p1 = p2
 //  - p3p1 = p3
@@ -39,21 +39,21 @@ struct Ray
 };
 
 // For all colors x = red, y = green, z = blue
-struct __align__(16) Material 
+struct __align__(16) Material
 {
     // Color light is tinted when reflected diffusely
-    // 
+    //
     Vec3 diffuse_albedo;
     // Portion of reflections that are specular (mirror-like) instead of diffuse (scattering) (0-1)
-    float metallicity;         
+    float metallicity;
     // Color light is tinted with when reflecting diffusely
     // Should be (1, 1, 1) for glossy materials
     // Colored for metals, components should be (0-1)
-    Vec3 specular_albedo;      
+    Vec3 specular_albedo;
     // How much randomness is added to metallic reflections (0-1)
-    float roughness;           
+    float roughness;
     // Color and strength of light emitted by surface (can be > 1)
-    Vec3 emitted;              
+    Vec3 emitted;
     // Index of refraction 0 means material is opaque (0 or > 1)
     float index_of_refraction;
 };
@@ -92,7 +92,7 @@ struct __align__(32) BvhNode {
     int child1;
     int child2;
 
-    // Split this BVH node into two leaves if there is a split plane with a lower cost than the 
+    // Split this BVH node into two leaves if there is a split plane with a lower cost than the
     // unsplit node
     void maybe_split(const struct Scene *scene, std::vector<BvhNode> &bvh_nodes, int max_depth);
 
@@ -117,7 +117,7 @@ struct Scene
 
     // Bounding volume hierarchy containing all triangles
     // Spheres are not included here for simplicity and speed
-    // since spheres were mainly added for early testing and aren't 
+    // since spheres were mainly added for early testing and aren't
     // used in 3D modelling software so we won't have any scenes with
     // a huge number of spheres.
     BvhNode *bvh;
@@ -160,9 +160,9 @@ struct Scene
 
     COMMON void bvh_closest_hit_distance(const Ray &ray, float &closest_hit_distance, int &closest_hit_index) const;
 
-    COMMON void generate_initial_rays(RayData *ray_data, unsigned int *ray_indices, unsigned int *ray_keys, int rays_per_pixel, int ray_index, int seed) const;
+    COMMON void generate_initial_rays(RayData *ray_data, int rays_per_pixel, int ray_index, int seed) const;
 
-    COMMON void process_ray(RayData *ray_data_ptr, unsigned int *ray_key, xor_random rng) const;
+    COMMON void process_ray(RayData *ray_data_ptr, xor_random rng) const;
 };
 
-void load_scene(Scene *scene, const char *filename, bool use_bvh);
+void load_scene(Scene *scene, const char *filename);
