@@ -23,7 +23,7 @@ __global__ void cuda_generate_initial_rays(RayData *ray_data, int rays_per_pixel
     cuda_scene.generate_initial_rays(ray_data, rays_per_pixel, index, seed);
 }
 
-__global__ void cuda_process_rays(RayData *ray_data, int ray_count, int seed)
+__global__ void cuda_process_rays(RayData *ray_data, int ray_count, int seed, int bounces)
 {
     int ray_index = blockIdx.x * blockDim.x + threadIdx.x;
     if (ray_index < ray_count)
@@ -31,7 +31,7 @@ __global__ void cuda_process_rays(RayData *ray_data, int ray_count, int seed)
         xor_random rng;
         xor_srand(&rng, ray_index * 4137874753 + 279220567 * seed);
 
-        cuda_scene.process_ray(ray_data + ray_index, rng);
+        cuda_scene.process_ray(ray_data + ray_index, rng, bounces);
     }
 
 }
@@ -103,12 +103,9 @@ Vec3 *gpu_raytrace(const Scene *scene)
                 (cuda_ray_data, rays_to_cast, remaining_rays);
 
 
-        for (int i = 0; i < scene->bounces; i++)
-        {
-            cudaStreamWaitEvent(0, scene_copy_done);
+        cudaStreamWaitEvent(0, scene_copy_done);
             cuda_process_rays<<<ceil_divide(total_rays, PROCESS_RAYS_BLOCK_SIZE), PROCESS_RAYS_BLOCK_SIZE>>>
-                    (cuda_ray_data, total_rays, remaining_rays * MAX_RAYS_PER_PIXEL_PER_PASS + i);
-        }
+                (cuda_ray_data, total_rays, remaining_rays * MAX_RAYS_PER_PIXEL_PER_PASS, scene->bounces);
 
         cudaStreamWaitEvent(0, framebuffer_done);
         cuda_accumulate_rays<<<ceil_divide(total_rays, ACCUMULATE_RAYS_BLOCK_SIZE), ACCUMULATE_RAYS_BLOCK_SIZE>>>

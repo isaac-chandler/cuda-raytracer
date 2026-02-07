@@ -146,7 +146,7 @@ struct Scene
 
     COMMON void generate_initial_rays(RayData *ray_data, int rays_per_pixel, int ray_index, int seed) const;
 
-    COMMON void process_ray(RayData *ray_data_ptr, xor_random rng) const;
+    COMMON void process_ray(RayData *ray_data_ptr, xor_random rng, int bounces) const;
 };
 
 void load_scene(Scene *scene, const char *filename);

@@ -15,7 +15,6 @@ template<typename T> COMMON T load_read_only(T *t)
 {
     static_assert(alignof(T) >= sizeof(float4), "load_read_only requires 16 byte alignment");
 
-#ifdef __CUDA_ARCH__
     constexpr int count = sizeof(T) / sizeof(float4);
 
     union Dummy{
@@ -34,9 +33,6 @@ template<typename T> COMMON T load_read_only(T *t)
     }
 
     return dummy.value;
-#else
-    return *t;
-#endif
 }
 
 void Scene::precompute_camera_data()
@@ -289,115 +285,114 @@ COMMON Vec3 equal_area_project_sphere_to_square(const Vec3 &direction)
     return {(u + 1) * 0.5f, (v + 1) * 0.5f, 0};
 }
 
-COMMON void Scene::process_ray(RayData *ray_data_ptr, xor_random rng) const
+COMMON void Scene::process_ray(RayData *ray_data_ptr, xor_random rng, int bounces) const
 {
-    if (ray_data_ptr->transmitted_color.x == 0 && ray_data_ptr->transmitted_color.y == 0 && ray_data_ptr->transmitted_color.z == 0)
-        return;
-
     RayData ray_data = *ray_data_ptr;
 
-    float closest_hit_distance = 1e30;
+    for (int i = 0; i < bounces; i++) {
+        float closest_hit_distance = 1e30;
 
-    int closest_hit_index = -1;
+        int closest_hit_index = -1;
 
-    const auto ray = ray_data.ray;
-    bvh_closest_hit_distance(ray, closest_hit_distance, closest_hit_index);
+        const auto ray = ray_data.ray;
+        bvh_closest_hit_distance(ray, closest_hit_distance, closest_hit_index);
 
-    if (closest_hit_index == -1)
-    {
-        // Environment map in our test data is rotated and has y and z axes flipped,
-        // apply a hardcoded transformation for now.
-        float dir_x = ray.direction.x * -0.386527 + ray.direction.z * 0.922278;
-        float dir_y = ray.direction.x * -0.922278 + ray.direction.z * -0.386527;
-        float dir_z = ray.direction.y;
-
-        Vec3 coords = equal_area_project_sphere_to_square({dir_x, dir_y, dir_z});
-        float x = coords.x;
-        float y = coords.y;
-
-        // Nearest filtering
-        int texel_x = (int) (clamp01(x) * (environment_map_width  - 1) + 0.5);
-        int texel_y = (int) (clamp01(y) * (environment_map_height - 1) + 0.5);
-        Vec3 sky_color = environment_map[texel_y * environment_map_height + texel_x];
-
-        ray_data.collected_color += sky_color * ray_data.transmitted_color;
-        ray_data.transmitted_color = {0, 0, 0};
-    }
-    else
-    {
-        const auto hit_point = ray.origin + closest_hit_distance * ray.direction;
-        ray_data.ray.origin = hit_point;
-
-        Vec3 normal;
-        const auto hit_triangle = triangles[closest_hit_index];
-        normal = hit_triangle.normal;
-
-        const auto material = load_read_only(&materials[material_indices[closest_hit_index]]);
-
-        ray_data.collected_color += material.emitted * ray_data.transmitted_color;
-
-
-        bool front_face = dot(normal, ray.direction) < 0;
-
-        if (!front_face)
+        if (closest_hit_index == -1)
         {
-            normal = -normal;
-        }
+            // Environment map in our test data is rotated and has y and z axes flipped,
+            // apply a hardcoded transformation for now.
+            float dir_x = ray.direction.x * -0.386527 + ray.direction.z * 0.922278;
+            float dir_y = ray.direction.x * -0.922278 + ray.direction.z * -0.386527;
+            float dir_z = ray.direction.y;
 
-        Vec3 rough_normal = normalise(normal + material.roughness * random_on_sphere(&rng));
-        float cos_theta = dot(rough_normal, ray.direction);
+            Vec3 coords = equal_area_project_sphere_to_square({dir_x, dir_y, dir_z});
+            float x = coords.x;
+            float y = coords.y;
 
+            // Nearest filtering
+            int texel_x = (int) (clamp01(x) * (environment_map_width  - 1) + 0.5);
+            int texel_y = (int) (clamp01(y) * (environment_map_height - 1) + 0.5);
+            Vec3 sky_color = environment_map[texel_y * environment_map_height + texel_x];
 
-
-        if (material.index_of_refraction == 0)
-        {
-            if (random01(&rng) <= material.metallicity)
-            {
-                ray_data.transmitted_color *= material.specular_albedo;
-                ray_data.ray.direction = ray.direction - 2 * cos_theta * rough_normal;
-            }
-            else
-            {
-                ray_data.transmitted_color *= material.diffuse_albedo;
-                ray_data.ray.direction = normalise(normal + random_on_sphere(&rng));
-            }
+            ray_data.collected_color += sky_color * ray_data.transmitted_color;
+            ray_data.transmitted_color = {0, 0, 0};
+            break;
         }
         else
         {
-            float ior = material.index_of_refraction;
-            float inv_ior = 1 / ior;
+            const auto hit_point = ray.origin + closest_hit_distance * ray.direction;
+            ray_data.ray.origin = hit_point;
 
-            if (front_face)
+            Vec3 normal;
+            const auto hit_triangle = triangles[closest_hit_index];
+            normal = hit_triangle.normal;
+
+            const auto material = load_read_only(&materials[material_indices[closest_hit_index]]);
+
+            ray_data.collected_color += material.emitted * ray_data.transmitted_color;
+
+
+            bool front_face = dot(normal, ray.direction) < 0;
+
+            if (!front_face)
             {
-                float temp = inv_ior;
-                inv_ior = ior;
-                ior = temp;
+                normal = -normal;
             }
 
-            float sin_theta_squared = 1 - cos_theta * cos_theta;
+            Vec3 rough_normal = normalise(normal + material.roughness * random_on_sphere(&rng));
+            float cos_theta = dot(rough_normal, ray.direction);
 
-            float r0 = (1 - ior) / (1 + ior);
-            r0 *= r0;
 
-            float cosine = 1 + cos_theta;
-            float reflectance = r0 + (1 - r0) * cosine * cosine * cosine * cosine * cosine;
 
-            if (sin_theta_squared > inv_ior * inv_ior || random01(&rng) < reflectance)
+            if (material.index_of_refraction == 0)
             {
-                ray_data.transmitted_color *= material.specular_albedo;
-                ray_data.ray.direction = ray.direction - 2 * cos_theta * rough_normal;
+                if (random01(&rng) <= material.metallicity)
+                {
+                    ray_data.transmitted_color *= material.specular_albedo;
+                    ray_data.ray.direction = ray.direction - 2 * cos_theta * rough_normal;
+                }
+                else
+                {
+                    ray_data.transmitted_color *= material.diffuse_albedo;
+                    ray_data.ray.direction = normalise(normal + random_on_sphere(&rng));
+                }
             }
             else
             {
-                ray_data.transmitted_color *= material.diffuse_albedo;
+                float ior = material.index_of_refraction;
+                float inv_ior = 1 / ior;
 
-                Vec3 r_out_perp = ior * (ray.direction - cos_theta * rough_normal);
-                Vec3 r_out_parallel = -sqrtf(1 - magnitude_squared(r_out_perp)) * rough_normal;
-                ray_data.ray.direction = normalise(r_out_parallel + r_out_perp);
+                if (front_face)
+                {
+                    float temp = inv_ior;
+                    inv_ior = ior;
+                    ior = temp;
+                }
+
+                float sin_theta_squared = 1 - cos_theta * cos_theta;
+
+                float r0 = (1 - ior) / (1 + ior);
+                r0 *= r0;
+
+                float cosine = 1 + cos_theta;
+                float reflectance = r0 + (1 - r0) * cosine * cosine * cosine * cosine * cosine;
+
+                if (sin_theta_squared > inv_ior * inv_ior || random01(&rng) < reflectance)
+                {
+                    ray_data.transmitted_color *= material.specular_albedo;
+                    ray_data.ray.direction = ray.direction - 2 * cos_theta * rough_normal;
+                }
+                else
+                {
+                    ray_data.transmitted_color *= material.diffuse_albedo;
+
+                    Vec3 r_out_perp = ior * (ray.direction - cos_theta * rough_normal);
+                    Vec3 r_out_parallel = -sqrtf(1 - magnitude_squared(r_out_perp)) * rough_normal;
+                    ray_data.ray.direction = normalise(r_out_parallel + r_out_perp);
+                }
             }
         }
     }
-
     *ray_data_ptr = ray_data;
 }
 
