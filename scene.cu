@@ -167,7 +167,7 @@ COMMON void Scene::bvh_closest_hit_distance(const Ray &ray, float &closest_hit_d
                     continue;
 
                 closest_hit_distance = hit_distance;
-                closest_hit_index = sphere_count + i;
+                closest_hit_index = i;
             }
         }
         else
@@ -220,20 +220,17 @@ void Scene::copy_from_cpu_async(const Scene &scene, cudaStream_t stream)
 {
     Scene scene_copy = scene;
 
-    int primitive_count = scene.triangle_count + scene.sphere_count;
     int environment_map_size = scene.environment_map_width * scene.environment_map_height;
 
-    CUDA_CHECK(cudaMalloc(&scene_copy.spheres,          scene.sphere_count   * sizeof(Sphere)));
     CUDA_CHECK(cudaMalloc(&scene_copy.triangles,        scene.triangle_count * sizeof(Triangle)));
     CUDA_CHECK(cudaMalloc(&scene_copy.materials,        scene.material_count * sizeof(Material)));
-    CUDA_CHECK(cudaMalloc(&scene_copy.material_indices, primitive_count      * sizeof(uint16_t)));
+    CUDA_CHECK(cudaMalloc(&scene_copy.material_indices, scene.triangle_count * sizeof(uint16_t)));
     CUDA_CHECK(cudaMalloc(&scene_copy.bvh,              scene.bvh_node_count * sizeof(BvhNode)));
     CUDA_CHECK(cudaMalloc(&scene_copy.environment_map,  environment_map_size * sizeof(Vec3)));
 
-    CUDA_CHECK(cudaMemcpyAsync(scene_copy.spheres,          scene.spheres,          sizeof(Sphere)   * scene.sphere_count,   cudaMemcpyHostToDevice, stream));
     CUDA_CHECK(cudaMemcpyAsync(scene_copy.triangles,        scene.triangles,        sizeof(Triangle) * scene.triangle_count, cudaMemcpyHostToDevice, stream));
     CUDA_CHECK(cudaMemcpyAsync(scene_copy.materials,        scene.materials,        sizeof(Material) * scene.material_count, cudaMemcpyHostToDevice, stream));
-    CUDA_CHECK(cudaMemcpyAsync(scene_copy.material_indices, scene.material_indices, sizeof(uint16_t) * primitive_count,      cudaMemcpyHostToDevice, stream));
+    CUDA_CHECK(cudaMemcpyAsync(scene_copy.material_indices, scene.material_indices, sizeof(uint16_t) * scene.triangle_count, cudaMemcpyHostToDevice, stream));
     CUDA_CHECK(cudaMemcpyAsync(scene_copy.bvh,              scene.bvh,              sizeof(BvhNode)  * scene.bvh_node_count, cudaMemcpyHostToDevice, stream));
     CUDA_CHECK(cudaMemcpyAsync(scene_copy.environment_map,  scene.environment_map,  sizeof(Vec3)     * environment_map_size, cudaMemcpyHostToDevice, stream));
 
@@ -250,7 +247,6 @@ void Scene::free_from_gpu()
     CUDA_CHECK(cudaFree(scene_copy.materials));
     CUDA_CHECK(cudaFree(scene_copy.bvh));
     CUDA_CHECK(cudaFree(scene_copy.triangles));
-    CUDA_CHECK(cudaFree(scene_copy.spheres));
 }
 
 
@@ -305,43 +301,6 @@ COMMON void Scene::process_ray(RayData *ray_data_ptr, xor_random rng) const
     int closest_hit_index = -1;
 
     const auto ray = ray_data.ray;
-
-    for (int i = 0; i < sphere_count; i++)
-    {
-        const auto sphere = spheres[i];
-
-        Vec3 offset = sphere.center - ray.origin;
-
-
-        float minus_half_b = dot(offset, ray.direction);
-        float quarter_c = magnitude_squared(offset) - sphere.radius * sphere.radius;
-
-        float quarter_discriminant = minus_half_b * minus_half_b - quarter_c;
-
-        if (quarter_discriminant < 0)
-            continue;
-
-        float half_square_root = sqrtf(quarter_discriminant);
-
-        float hit_distance = minus_half_b - half_square_root;
-
-        if (hit_distance < closest_hit_distance && hit_distance >= 0.005)
-        {
-            closest_hit_distance = hit_distance;
-            closest_hit_index = i;
-            continue;
-        }
-
-        hit_distance = minus_half_b + half_square_root;
-
-        if (hit_distance < closest_hit_distance && hit_distance >= 0.005)
-        {
-            closest_hit_distance = hit_distance;
-            closest_hit_index = i;
-            continue;
-        }
-    }
-
     bvh_closest_hit_distance(ray, closest_hit_distance, closest_hit_index);
 
     if (closest_hit_index == -1)
@@ -370,16 +329,8 @@ COMMON void Scene::process_ray(RayData *ray_data_ptr, xor_random rng) const
         ray_data.ray.origin = hit_point;
 
         Vec3 normal;
-        if (closest_hit_index < sphere_count)
-        {
-            const auto hit_sphere = spheres[closest_hit_index];
-            normal = (1 / hit_sphere.radius) * (hit_point - hit_sphere.center);
-        }
-        else
-        {
-            const auto hit_triangle = triangles[closest_hit_index - sphere_count];
-            normal = hit_triangle.normal;
-        }
+        const auto hit_triangle = triangles[closest_hit_index];
+        normal = hit_triangle.normal;
 
         const auto material = load_read_only(&materials[material_indices[closest_hit_index]]);
 
@@ -537,14 +488,12 @@ void load_scene(Scene *scene, const char *filename)
     scene->ray_count = 1;
     scene->bounces = 3;
 
-    std::vector<Sphere> spheres;
     std::vector<Triangle> triangles;
 
     std::ifstream scene_file(filename);
 
     std::unordered_map<std::string, uint16_t> materials_map;
     std::vector<Material> materials;
-    std::vector<uint16_t> sphere_materials;
     std::vector<uint16_t> triangle_materials;
 
     for (std::string line; std::getline(scene_file, line);)
@@ -658,21 +607,6 @@ void load_scene(Scene *scene, const char *filename)
 
             materials.push_back(material);
         }
-        else if (token == "sphere")
-        {
-            std::getline(tokens, token, ' ' );
-
-            sphere_materials.push_back(materials_map.at(token));
-
-            Sphere sphere;
-
-            tokens >> sphere.center.x;
-            tokens >> sphere.center.y;
-            tokens >> sphere.center.z;
-            tokens >> sphere.radius;
-
-            spheres.push_back(sphere);
-        }
         else if (token == "triangle")
         {
             std::getline(tokens, token, ' ' );
@@ -764,17 +698,12 @@ void load_scene(Scene *scene, const char *filename)
         }
     }
 
-    scene->sphere_count = spheres.size();
-    scene->spheres = new Sphere[spheres.size()];
-    std::copy(spheres.begin(), spheres.end(), scene->spheres);
-
     scene->triangle_count = triangles.size();
     scene->triangles = new Triangle[triangles.size()];
     std::copy(triangles.begin(), triangles.end(), scene->triangles);
 
-    scene->material_indices = new uint16_t[sphere_materials.size() + triangle_materials.size()];
-    std::copy(sphere_materials.begin(), sphere_materials.end(), scene->material_indices);
-    std::copy(triangle_materials.begin(), triangle_materials.end(), scene->material_indices + sphere_materials.size());
+    scene->material_indices = new uint16_t[triangle_materials.size()];
+    std::copy(triangle_materials.begin(), triangle_materials.end(), scene->material_indices);
 
     scene->materials = new Material[materials.size()];
     std::copy(materials.begin(), materials.end(), scene->materials);
@@ -785,12 +714,6 @@ void load_scene(Scene *scene, const char *filename)
 
     scene->min_coord = scene->bvh[0].aabb.min_bound;
     Vec3 scene_max_coord = scene->bvh[0].aabb.max_bound;
-    for (const auto &sphere : spheres)
-    {
-        scene_max_coord = max(scene_max_coord, sphere.center + Vec3{sphere.radius, sphere.radius, sphere.radius});
-        scene->min_coord = min(scene->min_coord, sphere.center - Vec3{sphere.radius, sphere.radius, sphere.radius});
-    }
-
     scene->inv_dimensions = {1 / scene_max_coord.x, 1 / scene_max_coord.y, 1 / scene_max_coord.z};
 }
 
@@ -933,7 +856,7 @@ void BvhNode::maybe_split(const Scene *scene, std::vector<BvhNode> &bvh_nodes, i
         else
         {
             std::swap(scene->triangles[i], scene->triangles[j]);
-            std::swap(scene->material_indices[scene->sphere_count + i], scene->material_indices[scene->sphere_count + j]);
+            std::swap(scene->material_indices[i], scene->material_indices[j]);
             j--;
         }
     }

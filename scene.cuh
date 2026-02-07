@@ -6,12 +6,6 @@
 
 #include <vector>
 
-struct __align__(16) Sphere
-{
-    Vec3 center;
-    float radius;
-};
-
 // Triangles have two different representations during the program
 // If p1, p2 and p3 are the triangle vertices then:
 // During ray tracing:
@@ -101,25 +95,15 @@ struct __align__(32) BvhNode {
 
 struct Scene
 {
-    Sphere *spheres;
-    int sphere_count;
-
     Triangle *triangles;
     int triangle_count;
 
     // Material index associated with each primitive, indices are stored instead of the whole material
     // since there may be hundreds of thousands of triangles in a mesh with the exact same material
-    // Spheres are associated with material_indices[0..sphere_count - 1]
-    // Triangles are associated with material_indices[sphere_count .. sphere_count + triangle_count - 1]
     uint16_t *material_indices;
     Material *materials;
     uint16_t material_count;
 
-    // Bounding volume hierarchy containing all triangles
-    // Spheres are not included here for simplicity and speed
-    // since spheres were mainly added for early testing and aren't
-    // used in 3D modelling software so we won't have any scenes with
-    // a huge number of spheres.
     BvhNode *bvh;
     int bvh_node_count;
 
