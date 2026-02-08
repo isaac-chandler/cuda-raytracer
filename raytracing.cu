@@ -16,9 +16,6 @@
 
 __constant__ Scene cuda_scene;
 
-#define MAX_RAYS_PER_PASS (1 << 8)
-#define MAX_PIXELS_PER_PASS (1 << 18)
-
 int ceil_divide(int numerator, int divisor)
 {
     return (numerator + divisor - 1) / divisor;

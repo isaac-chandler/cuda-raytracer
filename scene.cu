@@ -10,7 +10,7 @@
 #include <cooperative_groups/reduce.h>
 #include <immintrin.h>
 
-#define MAX_BVH_DEPTH 30
+#define MAX_BVH_DEPTH 31
 
 // By using this we promise CUDA that the value we are reading will never be written by a kernel
 // This allows the data to be loaded into L1 cache which is not coherent
@@ -87,25 +87,14 @@ __device__ void bvh_closest_hit_distance(const Ray &ray, float &closest_hit_dist
     extern __constant__ Scene cuda_scene;
     float3 n_inv = {1 / ray.direction.x, 1 / ray.direction.y, 1 / ray.direction.z};
 
-    unsigned int node_index_stack[MAX_BVH_DEPTH + 1];
-    float node_distance_stack[MAX_BVH_DEPTH + 1];
-    int stack_count = 1;
+    unsigned int node_index_stack[MAX_BVH_DEPTH];
+    float node_distance_stack[MAX_BVH_DEPTH];
+    int stack_count = 0;
 
-    node_index_stack[0] = 0;
-    node_distance_stack[0] = 0;
-
-    while (stack_count)
+    int index = 0;
+    while (true)
     {
-        stack_count--;
-        float distance = node_distance_stack[stack_count];
-
-        if (distance >= closest_hit_distance)
-        {
-            continue;
-        }
-
-        BvhNode node = cuda_scene.bvh[node_index_stack[stack_count]];
-
+        const BvhNode& node = cuda_scene.bvh[index];
 
         if (node.is_leaf())
         {
@@ -138,6 +127,19 @@ __device__ void bvh_closest_hit_distance(const Ray &ray, float &closest_hit_dist
                 closest_hit_distance = hit_distance;
                 closest_hit_index = i;
             }
+
+            while (true)
+            {
+                stack_count--;
+                if (stack_count < 0)
+                    return;
+
+                if (node_distance_stack[stack_count] <= closest_hit_distance)
+                {
+                    index = node_index_stack[stack_count];
+                    break;
+                }
+            }
         }
         else
         {
@@ -146,37 +148,30 @@ __device__ void bvh_closest_hit_distance(const Ray &ray, float &closest_hit_dist
             bool hit1 = ray_aabb_intersection(cuda_scene.bvh[node.child1].aabb, ray, n_inv, hit1_distance, closest_hit_distance);
             bool hit2 = ray_aabb_intersection(cuda_scene.bvh[node.child2].aabb, ray, n_inv, hit2_distance, closest_hit_distance);
 
-            if (hit1_distance < hit2_distance)
+            if (hit1 != hit2)
             {
-                if (hit1)
+                index = hit1 ? node.child1 : node.child2;
+            }
+            else if (!hit1)
+            {
+                while (true)
                 {
-                    node_index_stack[stack_count] = node.child1;
-                    node_distance_stack[stack_count] = hit1_distance;
-                    stack_count++;
-                }
+                    stack_count--;
+                    if (stack_count < 0)
+                        return;
 
-                if (hit2)
-                {
-                    node_index_stack[stack_count] = node.child2;
-                    node_distance_stack[stack_count] = hit2_distance;
-                    stack_count++;
+                    if (node_distance_stack[stack_count] <= closest_hit_distance)
+                    {
+                        index = node_index_stack[stack_count];
+                        break;
+                    }
                 }
             }
             else
             {
-                if (hit2)
-                {
-                    node_index_stack[stack_count] = node.child2;
-                    node_distance_stack[stack_count] = hit2_distance;
-                    stack_count++;
-                }
-
-                if (hit1)
-                {
-                    node_index_stack[stack_count] = node.child1;
-                    node_distance_stack[stack_count] = hit1_distance;
-                    stack_count++;
-                }
+                node_index_stack[stack_count] = hit1_distance > hit2_distance ? node.child1 : node.child2;
+                stack_count++;
+                index = hit1_distance > hit2_distance ? node.child2 : node.child1;
             }
         }
     }
@@ -186,19 +181,35 @@ void Scene::copy_from_cpu(const Scene &scene)
 {
     Scene scene_copy = scene;
 
-    int environment_map_size = scene.environment_map_width * scene.environment_map_height;
+    const auto channel_desc = cudaCreateChannelDesc(16, 16, 16, 16, cudaChannelFormatKindFloat);
+    const cudaTextureDesc texture_desc{
+        .addressMode = {cudaAddressModeClamp, cudaAddressModeClamp, cudaAddressModeClamp},
+        .filterMode = cudaFilterModeLinear,
+        .readMode = cudaReadModeElementType,
+        .sRGB = 0,
+        .normalizedCoords = 1,
+        .maxAnisotropy = 1,
+    };
 
     CUDA_CHECK(cudaMalloc(&scene_copy.triangles,        scene.triangle_count * sizeof(Triangle)));
     CUDA_CHECK(cudaMalloc(&scene_copy.materials,        scene.material_count * sizeof(Material)));
     CUDA_CHECK(cudaMalloc(&scene_copy.material_indices, scene.triangle_count * sizeof(uint16_t)));
     CUDA_CHECK(cudaMalloc(&scene_copy.bvh,              scene.bvh_node_count * sizeof(BvhNode)));
-    CUDA_CHECK(cudaMalloc(&scene_copy.environment_map,  environment_map_size * sizeof(float3)));
+    CUDA_CHECK(cudaMallocArray(&scene_copy.environment_map_cuda, &channel_desc, scene.environment_map_width, scene.environment_map_height));
 
     CUDA_CHECK(cudaMemcpy(scene_copy.triangles,        scene.triangles,        sizeof(Triangle) * scene.triangle_count, cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(scene_copy.materials,        scene.materials,        sizeof(Material) * scene.material_count, cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(scene_copy.material_indices, scene.material_indices, sizeof(uint16_t) * scene.triangle_count, cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(scene_copy.bvh,              scene.bvh,              sizeof(BvhNode)  * scene.bvh_node_count, cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(scene_copy.environment_map,  scene.environment_map,  sizeof(float3)     * environment_map_size, cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy2DToArray(scene_copy.environment_map_cuda, 0, 0, scene.environment_map,
+                                   scene.environment_map_width * sizeof(__half) * 4,
+                                   scene.environment_map_width * sizeof(__half) * 4,
+                                   scene.environment_map_height,
+                                   cudaMemcpyHostToDevice));
+    cudaResourceDesc resource_desc = {};
+    resource_desc.res.array.array = scene_copy.environment_map_cuda;
+    resource_desc.resType = cudaResourceTypeArray;
+    CUDA_CHECK(cudaCreateTextureObject(&scene_copy.environment_map_texture, &resource_desc, &texture_desc, nullptr));
 
     CUDA_CHECK(cudaMemcpyToSymbol(*this, &scene_copy, sizeof(Scene)));
 }
@@ -208,7 +219,8 @@ void Scene::free_from_gpu()
     Scene scene_copy;
     CUDA_CHECK(cudaMemcpyFromSymbol(&scene_copy, *this, sizeof(Scene)));
 
-    CUDA_CHECK(cudaFree(scene_copy.environment_map));
+    CUDA_CHECK(cudaDestroyTextureObject(scene_copy.environment_map_texture));
+    CUDA_CHECK(cudaFreeArray(scene_copy.environment_map_cuda));
     CUDA_CHECK(cudaFree(scene_copy.material_indices));
     CUDA_CHECK(cudaFree(scene_copy.materials));
     CUDA_CHECK(cudaFree(scene_copy.bvh));
@@ -294,12 +306,9 @@ __global__ void process_rays(float3* framebuffer, int start_x, int start_y, int 
             float x = coords.x;
             float y = coords.y;
 
-            // Nearest filtering
-            int texel_x = (int) (clamp01(x) * (cuda_scene.environment_map_width  - 1) + 0.5);
-            int texel_y = (int) (clamp01(y) * (cuda_scene.environment_map_height - 1) + 0.5);
-            float3 sky_color = cuda_scene.environment_map[texel_y * cuda_scene.environment_map_height + texel_x];
+            float4 sky_color = tex2D<float4>(cuda_scene.environment_map_texture, x, y);
 
-            collected_color += sky_color * transmitted_color;
+            collected_color += float3{sky_color.x, sky_color.y, sky_color.z} * transmitted_color;
             transmitted_color = {0, 0, 0};
             break;
         }
@@ -446,7 +455,7 @@ void load_ply(std::vector<Triangle> &triangles, const std::string &filename)
     }
 }
 
-float3 *load_pfm(const std::string &filename, int *width, int *height)
+__half *load_pfm(const std::string &filename, int *width, int *height)
 {
     std::ifstream file(filename, std::ios_base::binary);
 
@@ -461,10 +470,23 @@ float3 *load_pfm(const std::string &filename, int *width, int *height)
 
     std::getline(file, line);
 
-    float3 *image = new float3[*width * *height];
-    file.read((char *) image, sizeof(float3) * *width * *height);
+    int pixel_count = *width * *height;
 
-    return image;
+    float3 *image = new float3[pixel_count];
+    file.read((char *) image, sizeof(float3) * pixel_count);
+
+    __half *image_expanded = new __half[pixel_count * 4];
+    for (int i = 0; i < pixel_count; i++)
+    {
+        image_expanded[i * 4 + 0] = __float2half(image[i].x);
+        image_expanded[i * 4 + 1] = __float2half(image[i].y);
+        image_expanded[i * 4 + 2] = __float2half(image[i].z);
+        image_expanded[i * 4 + 3] = __float2half(0.0f);
+    }
+
+    delete[] image;
+
+    return image_expanded;
 }
 
 void load_scene(Scene *scene, const char *filename)
@@ -501,7 +523,7 @@ void load_scene(Scene *scene, const char *filename)
             tokens >> g;
             tokens >> b;
 
-            scene->environment_map = new float3{r, g, b};
+            scene->environment_map = new __half[4]{__float2half(r), __float2half(g), __float2half(b), __float2half(0.0f)};
             scene->environment_map_width = 1;
             scene->environment_map_height = 1;
         }
@@ -872,7 +894,7 @@ void Scene::generate_bvh(int max_depth)
 
         int best_axis;
         float best_position;
-        float best_cost = our_cost;
+        float best_cost = 1e30;
 
         float3 min_centroids{v_min_centroid.m128_f32[0], v_min_centroid.m128_f32[1], v_min_centroid.m128_f32[2]};
         float3 max_centroids{v_max_centroid.m128_f32[0], v_max_centroid.m128_f32[1], v_max_centroid.m128_f32[2]};

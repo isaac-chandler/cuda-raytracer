@@ -1,1 +1,1 @@
-nvcc --std c++20 --use_fast_math -O3 -g -G -lineinfo -dopt=on -dlto -src-in-ptx -Xcompiler /fp:fast -Xcompiler -openmp -o raytracing.exe -arch sm_89 --restrict raytracing.cu scene.cu
+nvcc --std c++20 --use_fast_math -O3 -g -G -lineinfo -dopt=on -dlto -src-in-ptx -Xcompiler /fp:fast -Xcompiler -openmp -Xcompiler /Zc:preprocessor -o raytracing.exe -arch sm_89 --restrict raytracing.cu scene.cu

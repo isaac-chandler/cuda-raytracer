@@ -4,6 +4,8 @@
 #include "math.cuh"
 #include "random.cuh"
 
+#include <cuda_fp16.h>
+
 #include <vector>
 
 // Triangles have two different representations during the program
@@ -111,7 +113,9 @@ struct Scene
     int width;
     int height;
 
-    float3 *environment_map;
+    __half *environment_map;
+    cudaArray_t environment_map_cuda;
+    cudaTextureObject_t environment_map_texture;
     int environment_map_width, environment_map_height;
     float3 camera_position;
     float3 forward;
@@ -146,6 +150,7 @@ struct Scene
 };
 
 #define MAX_TILE_SIZE 128
+#define MAX_RAYS_PER_PASS 256
 
 __device__ void bvh_closest_hit_distance(const Ray &ray, float &closest_hit_distance, int &closest_hit_index);
 __global__ void process_rays(float3* framebuffer, int start_x, int start_y, int seed);
