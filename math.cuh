@@ -106,7 +106,12 @@ COMMON inline float3 operator*(float scalar, const float3 &vector)
 
 COMMON inline float3 normalise(const float3 &vector)
 {
-    return (1.0f / magnitude(vector)) * vector;
+#ifdef __CUDA_ARCH__
+    float mult = rsqrtf(magnitude_squared(vector));
+#else
+    float mult = 1.0f / magnitude(vector);
+#endif
+    return mult * vector;
 }
 
 COMMON inline float clamp(float x, float min_val, float max_val)

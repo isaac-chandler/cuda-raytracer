@@ -44,12 +44,12 @@ COMMON inline float random_radians(xor_random *rng)
     return xor_rand(rng) * (M_PI * 2 /  UINT_MAX);
 }
 
-inline float random_bidir(xor_random *rng)
+COMMON inline float random_bidir(xor_random *rng)
 {
-    return random02(rng) - 1;
+    return ((int)xor_rand(rng)) * (1.0f /  INT_MAX);
 }
 
-inline float3 random_in_sphere(xor_random *rng)
+COMMON inline float3 random_in_sphere(xor_random *rng)
 {
     float3 v;
 
@@ -60,16 +60,22 @@ inline float3 random_in_sphere(xor_random *rng)
     return v;
 }
 
-inline COMMON float3 random_on_sphere(xor_random *rng)
+COMMON inline float3 random_on_sphere(xor_random *rng)
 {
-    float r1 = random_radians(rng);
-    float r2 = random02(rng);
+    float3 v;
+    float mag;
 
-    float x = sqrtf(r2 * (2 - r2));
+    do {
+        v = {random_bidir(rng), random_bidir(rng), random_bidir(rng)};
+        mag = magnitude_squared(v);
+    } while (mag >  1);
 
-    return {
-        cosf(r1) * x,
-        sinf(r1) * x,
-        1 - r2,
-    };
+
+#ifdef __CUDA_ARCH__
+    float mult = rsqrtf(mag);
+#else
+    float mult = 1.0f / sqrtf(mag);
+#endif
+
+    return mult * v;
 }

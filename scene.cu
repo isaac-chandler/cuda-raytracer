@@ -333,10 +333,9 @@ __global__ void process_rays(float3* framebuffer, int start_x, int start_y, int 
                 normal = -normal;
             }
 
-            float3 rough_normal = normalise(normal + material.roughness * random_on_sphere(&rng));
+            float3 rand_on_sphere = random_on_sphere(&rng);
+            float3 rough_normal = normalise(normal + material.roughness * rand_on_sphere);
             float cos_theta = dot(rough_normal, ray.direction);
-
-
 
             if (material.index_of_refraction == 0)
             {
@@ -348,7 +347,7 @@ __global__ void process_rays(float3* framebuffer, int start_x, int start_y, int 
                 else
                 {
                     transmitted_color *= material.diffuse_albedo;
-                    ray.direction = normalise(normal + random_on_sphere(&rng));
+                    ray.direction = normalise(normal + rand_on_sphere);
                 }
             }
             else
