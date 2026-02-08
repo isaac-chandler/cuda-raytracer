@@ -20,16 +20,16 @@
 //  - normal = (p1 + p2 + p3) / 3 [centroid]
 struct __align__(16) Triangle
 {
-    Vec3 p1;
-    Vec3 p2p1;
-    Vec3 p3p1;
-    Vec3 normal;
+    float3 p1;
+    float3 p2p1;
+    float3 p3p1;
+    float3 normal;
 };
 
 struct Ray
 {
-    Vec3 origin;
-    Vec3 direction;
+    float3 origin;
+    float3 direction;
 };
 
 // For all colors x = red, y = green, z = blue
@@ -37,17 +37,17 @@ struct __align__(16) Material
 {
     // Color light is tinted when reflected diffusely
     //
-    Vec3 diffuse_albedo;
+    float3 diffuse_albedo;
     // Portion of reflections that are specular (mirror-like) instead of diffuse (scattering) (0-1)
     float metallicity;
     // Color light is tinted with when reflecting diffusely
     // Should be (1, 1, 1) for glossy materials
     // Colored for metals, components should be (0-1)
-    Vec3 specular_albedo;
+    float3 specular_albedo;
     // How much randomness is added to metallic reflections (0-1)
     float roughness;
     // Color and strength of light emitted by surface (can be > 1)
-    Vec3 emitted;
+    float3 emitted;
     // Index of refraction 0 means material is opaque (0 or > 1)
     float index_of_refraction;
 };
@@ -56,18 +56,18 @@ struct __align__(16) RayData
 {
     Ray ray;
     // Tint due to all albedos applied to this ray
-    Vec3 transmitted_color;
+    float3 transmitted_color;
     // Actual light along this array from emissive materials or skybox
-    Vec3 collected_color;
+    float3 collected_color;
 };
 
 struct Aabb {
     // Use very large floats instead of infinity since special IEEE float
     // values MAY be slower to operate on (definitely denormals but maybe infinities are fine?)
-    Vec3 min_bound = { 1e30,  1e30,  1e30};
-    Vec3 max_bound = {-1e30, -1e30, -1e30};
+    float3 min_bound = { 1e30,  1e30,  1e30};
+    float3 max_bound = {-1e30, -1e30, -1e30};
 
-    void expand(const Vec3 &other);
+    void expand(const float3 &other);
     void expand(const Triangle &other);
     void expand(const Aabb &other);
     float half_area() const;
@@ -111,23 +111,23 @@ struct Scene
     int width;
     int height;
 
-    Vec3 *environment_map;
+    float3 *environment_map;
     int environment_map_width, environment_map_height;
-    Vec3 camera_position;
-    Vec3 forward;
-    Vec3 up;
+    float3 camera_position;
+    float3 forward;
+    float3 up;
     float vertical_fov;
 
     float exposure;
 
-    Vec3 min_coord;
-    Vec3 inv_dimensions;
+    float3 min_coord;
+    float3 inv_dimensions;
 
     // Precomputed values for ray generation based on camera settings
-    Vec3 scaled_right;
-    Vec3 scaled_up;
+    float3 scaled_right;
+    float3 scaled_up;
 
-    Vec3 near_plane_top_left;
+    float3 near_plane_top_left;
 
     float inv_width;
     float inv_height;
@@ -139,14 +139,15 @@ struct Scene
 
     void generate_bvh(int max_depth);
 
-    void copy_from_cpu_async(const Scene &cpu_scene, cudaStream_t stream);
+    void copy_from_cpu(const Scene &cpu_scene);
     void free_from_gpu();
 
-    COMMON void bvh_closest_hit_distance(const Ray &ray, float &closest_hit_distance, int &closest_hit_index) const;
 
-    COMMON void generate_initial_rays(RayData *ray_data, int rays_per_pixel, int ray_index, int seed) const;
-
-    COMMON void process_ray(RayData *ray_data_ptr, xor_random rng, int bounces) const;
 };
+
+#define MAX_TILE_SIZE 128
+
+__device__ void bvh_closest_hit_distance(const Ray &ray, float &closest_hit_distance, int &closest_hit_index);
+__global__ void process_rays(float3* framebuffer, int start_x, int start_y, int seed);
 
 void load_scene(Scene *scene, const char *filename);

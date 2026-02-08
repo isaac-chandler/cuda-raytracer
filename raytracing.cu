@@ -16,116 +16,52 @@
 
 __constant__ Scene cuda_scene;
 
-__global__ void cuda_generate_initial_rays(RayData *ray_data, int rays_per_pixel, int seed)
-{
-    int index = blockIdx.x * blockDim.x + threadIdx.x;
-
-    cuda_scene.generate_initial_rays(ray_data, rays_per_pixel, index, seed);
-}
-
-__global__ void cuda_process_rays(RayData *ray_data, int ray_count, int seed, int bounces)
-{
-    int ray_index = blockIdx.x * blockDim.x + threadIdx.x;
-    if (ray_index < ray_count)
-    {
-        xor_random rng;
-        xor_srand(&rng, ray_index * 4137874753 + 279220567 * seed);
-
-        cuda_scene.process_ray(ray_data + ray_index, rng, bounces);
-    }
-
-}
-
-__global__ void cuda_accumulate_rays(Vec3 *framebuffer, RayData *ray_data, int rays_per_pixel, int pixel_count)
-{
-    int ray_index = blockIdx.x * blockDim.x + threadIdx.x;
-    int framebuffer_index = ray_index / rays_per_pixel;
-
-    if (framebuffer_index < pixel_count)
-    {
-        atomicAdd(&framebuffer[framebuffer_index].x, ray_data[ray_index].collected_color.x);
-        atomicAdd(&framebuffer[framebuffer_index].y, ray_data[ray_index].collected_color.y);
-        atomicAdd(&framebuffer[framebuffer_index].z, ray_data[ray_index].collected_color.z);
-    }
-}
-
-#define MAX_RAYS_PER_PIXEL_PER_PASS 20
-#define GENERATE_RAYS_BLOCK_SIZE 128
-#define PROCESS_RAYS_BLOCK_SIZE 128
-#define ACCUMULATE_RAYS_BLOCK_SIZE 128
+#define MAX_RAYS_PER_PASS (1 << 8)
+#define MAX_PIXELS_PER_PASS (1 << 18)
 
 int ceil_divide(int numerator, int divisor)
 {
     return (numerator + divisor - 1) / divisor;
 }
 
-Vec3 *gpu_raytrace(const Scene *scene)
+float3 *gpu_raytrace(const Scene *scene)
 {
     auto start_time = std::chrono::high_resolution_clock::now();
 
     int pixel_count = scene->width * scene->height;
-    Vec3 *cuda_framebuffer;
-    CUDA_CHECK(cudaMalloc(&cuda_framebuffer, pixel_count * sizeof(Vec3)));
+    float3 *cuda_framebuffer;
+    CUDA_CHECK(cudaMalloc(&cuda_framebuffer, pixel_count * sizeof(float3)));
+    cuda_scene.copy_from_cpu(*scene);
+    cudaMemset(cuda_framebuffer, 0, pixel_count * sizeof(float3));
 
-    int max_ray_count = pixel_count * MAX_RAYS_PER_PIXEL_PER_PASS;
-    RayData *cuda_ray_data;
-    CUDA_CHECK(cudaMalloc(&cuda_ray_data, max_ray_count * sizeof(RayData)));
+    int seed = 1;
 
-    cudaStream_t scene_copy_stream;
-    CUDA_CHECK(cudaStreamCreate(&scene_copy_stream));
-
-    cudaEvent_t scene_copy_done;
-    CUDA_CHECK(cudaEventCreateWithFlags(&scene_copy_done, cudaEventDisableTiming));
-
-    cudaStream_t framebuffer_stream;
-    CUDA_CHECK(cudaStreamCreate(&framebuffer_stream));
-
-    cudaEvent_t framebuffer_done;
-    CUDA_CHECK(cudaEventCreateWithFlags(&framebuffer_done, cudaEventDisableTiming));
-
-    // Scene copying doesn't need to finish until cuda_process_rays
-    cuda_scene.copy_from_cpu_async(*scene, scene_copy_stream);
-    cudaEventRecord(scene_copy_done, scene_copy_stream);
-
-    // Framebuffer doesn't need to finish zeroing until cuda_accumulate_rays
-    cudaMemsetAsync(cuda_framebuffer, 0, pixel_count * sizeof(Vec3), framebuffer_stream);
-    cudaEventRecord(framebuffer_done, framebuffer_stream);
-
-    int remaining_rays = scene->ray_count;
-
-    while (remaining_rays)
+    for (int y = 0; y < scene->height; y += MAX_TILE_SIZE)
     {
-        int rays_to_cast = min(remaining_rays, MAX_RAYS_PER_PIXEL_PER_PASS);
-        remaining_rays -= rays_to_cast;
+        int tile_height = min(scene->height - y, MAX_TILE_SIZE);
+        for (int x = 0; x < scene->width; x += MAX_TILE_SIZE)
+        {
+            int tile_width = min(scene->width - x, MAX_TILE_SIZE);
 
-        int total_rays = rays_to_cast * scene->width * scene->height;
-        cuda_generate_initial_rays<<<ceil_divide(total_rays, GENERATE_RAYS_BLOCK_SIZE), GENERATE_RAYS_BLOCK_SIZE>>>
-                (cuda_ray_data, rays_to_cast, remaining_rays);
+            for (int ray_index = 0; ray_index < scene->ray_count; ray_index += MAX_RAYS_PER_PASS)
+            {
 
+                int pass_ray_count = min(MAX_RAYS_PER_PASS, scene->ray_count - ray_index);
+                process_rays<<<dim3(tile_width, tile_height, 1), pass_ray_count>>>(cuda_framebuffer, x, y, seed);
 
-        cudaStreamWaitEvent(0, scene_copy_done);
-            cuda_process_rays<<<ceil_divide(total_rays, PROCESS_RAYS_BLOCK_SIZE), PROCESS_RAYS_BLOCK_SIZE>>>
-                (cuda_ray_data, total_rays, remaining_rays * MAX_RAYS_PER_PIXEL_PER_PASS, scene->bounces);
-
-        cudaStreamWaitEvent(0, framebuffer_done);
-        cuda_accumulate_rays<<<ceil_divide(total_rays, ACCUMULATE_RAYS_BLOCK_SIZE), ACCUMULATE_RAYS_BLOCK_SIZE>>>
-                (cuda_framebuffer, cuda_ray_data, rays_to_cast, pixel_count);
+                seed += MAX_TILE_SIZE * MAX_TILE_SIZE * pass_ray_count;
+            }
+        }
     }
 
-    Vec3 *framebuffer = new Vec3[pixel_count];
+    float3 *framebuffer = new float3[pixel_count];
 
     CUDA_CHECK(cudaDeviceSynchronize());
-    CUDA_CHECK(cudaMemcpy(framebuffer, cuda_framebuffer, pixel_count * sizeof(Vec3), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(framebuffer, cuda_framebuffer, pixel_count * sizeof(float3), cudaMemcpyDeviceToHost));
 
     cuda_scene.free_from_gpu();
 
     CUDA_CHECK(cudaFree(cuda_framebuffer));
-    CUDA_CHECK(cudaFree(cuda_ray_data));
-
-    cudaEventDestroy(framebuffer_done);
-    cudaEventDestroy(scene_copy_done);
-    cudaStreamDestroy(framebuffer_stream);
-    cudaStreamDestroy(scene_copy_stream);
 
     auto end_time = std::chrono::high_resolution_clock::now();
     auto gpu_time = std::chrono::duration<float>(end_time - start_time).count();
@@ -134,7 +70,7 @@ Vec3 *gpu_raytrace(const Scene *scene)
     return framebuffer;
 }
 
-void write_framebuffer_to_output_image(Scene *scene, std::vector<unsigned char> &output_image, const Vec3 *framebuffer)
+void write_framebuffer_to_output_image(Scene *scene, std::vector<unsigned char> &output_image, const float3 *framebuffer)
 {
     for (int pixel_index = 0; pixel_index < scene->width * scene->height; pixel_index++)
     {
@@ -165,7 +101,7 @@ int main(int argc, char **argv)
     load_scene(&scene, argv[1]);
 
     std::vector<unsigned char> output_image;
-    Vec3 *framebuffer = gpu_raytrace(&scene);
+    float3 *framebuffer = gpu_raytrace(&scene);
     write_framebuffer_to_output_image(&scene, output_image, framebuffer);
     delete[] framebuffer;
 

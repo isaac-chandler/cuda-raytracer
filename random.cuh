@@ -49,9 +49,9 @@ inline float random_bidir(xor_random *rng)
     return random02(rng) - 1;
 }
 
-inline Vec3 random_in_sphere(xor_random *rng)
+inline float3 random_in_sphere(xor_random *rng)
 {
-    Vec3 v;
+    float3 v;
 
     do {
         v = {random_bidir(rng), random_bidir(rng), random_bidir(rng)};
@@ -60,7 +60,7 @@ inline Vec3 random_in_sphere(xor_random *rng)
     return v;
 }
 
-inline COMMON Vec3 random_on_sphere(xor_random *rng)
+inline COMMON float3 random_on_sphere(xor_random *rng)
 {
     float r1 = random_radians(rng);
     float r2 = random02(rng);
@@ -68,8 +68,8 @@ inline COMMON Vec3 random_on_sphere(xor_random *rng)
     float x = sqrtf(r2 * (2 - r2));
 
     return {
-        cosf(r1) * x, 
-        sinf(r1) * x, 
+        cosf(r1) * x,
+        sinf(r1) * x,
         1 - r2,
     };
 }
